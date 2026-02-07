@@ -1,15 +1,15 @@
 """
 Shared database engine, session factory, and declarative base.
-Extracted so that model modules can import without circular dependencies.
+Imported by models and route modules to avoid circular dependencies.
+
+NOTE: load_dotenv() must be called BEFORE this module is imported
+(done in main.py at startup).
 """
 
 import os
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-
-load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:

@@ -1,38 +1,29 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppState } from "../state";
 import { Card } from "../components/Card";
 import { Button } from "../components/Button";
 import { KPICard } from "../components/KPICard";
-import { useToast } from "../components/Toast";
+import { Skeleton } from "../components/Skeleton";
+import { useApiData } from "../hooks/useApiData";
 import { getUsageCosts, getRateLimitStatus } from "../lib/api";
-import type { UsageCosts, RateLimitStatus } from "../types";
 
 export const UsagePage: React.FC = () => {
   const { activePlugin } = useAppState();
   const navigate = useNavigate();
-  const { push } = useToast();
-  const [costs, setCosts] = useState<UsageCosts | null>(null);
-  const [rateLimit, setRateLimit] = useState<RateLimitStatus | null>(null);
-  const [loading, setLoading] = useState(false);
   const [days, setDays] = useState(30);
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const [c, r] = await Promise.all([getUsageCosts(activePlugin, days), getRateLimitStatus()]);
-      setCosts(c);
-      setRateLimit(r);
-    } catch (err: any) {
-      push(err?.message || "Failed to load usage data", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: costs, loading: loadingCosts } = useApiData(
+    () => getUsageCosts(activePlugin, days),
+    [activePlugin, days],
+  );
 
-  useEffect(() => {
-    fetchData();
-  }, [activePlugin, days]);
+  const { data: rateLimit, loading: loadingRL } = useApiData(
+    () => getRateLimitStatus(),
+    [],
+  );
+
+  const loading = loadingCosts || loadingRL;
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
@@ -52,16 +43,23 @@ export const UsagePage: React.FC = () => {
             <option value={90}>Last 90 days</option>
             <option value={365}>Last year</option>
           </select>
-          <Button variant="secondary" size="sm" onClick={() => navigate("/chat")}>
-            Back to Chat
-          </Button>
+          <Button variant="secondary" size="sm" onClick={() => navigate("/chat")}>Back to Chat</Button>
         </div>
       </div>
 
-      {loading && <p className="text-sm text-slate-500">Loading...</p>}
+      {loading && (
+        <div className="space-y-4">
+          <Skeleton className="h-24 w-full rounded-xl" />
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-20 w-full rounded-xl" />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Rate Limit Status */}
-      {rateLimit && (
+      {!loading && rateLimit && (
         <Card className="mb-6">
           <h3 className="text-sm font-semibold text-slate-900 mb-3">Rate Limit Status</h3>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -71,9 +69,7 @@ export const UsagePage: React.FC = () => {
             </div>
             <div>
               <p className="text-xs text-slate-500">Requests (window)</p>
-              <p className="text-sm font-medium text-slate-900">
-                {rateLimit.requests_in_window} / {rateLimit.max_requests}
-              </p>
+              <p className="text-sm font-medium text-slate-900">{rateLimit.requests_in_window} / {rateLimit.max_requests}</p>
             </div>
             <div>
               <p className="text-xs text-slate-500">Remaining</p>
@@ -88,7 +84,7 @@ export const UsagePage: React.FC = () => {
       )}
 
       {/* Cost Summary */}
-      {costs && (
+      {!loading && costs && (
         <>
           <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <KPICard title="Total LLM Calls" value={costs.total_calls.toLocaleString()} />
@@ -97,7 +93,6 @@ export const UsagePage: React.FC = () => {
             <KPICard title="Est. Cost (USD)" value={`$${costs.total_estimated_cost_usd.toFixed(4)}`} />
           </div>
 
-          {/* By Model Breakdown */}
           <Card>
             <h3 className="text-sm font-semibold text-slate-900 mb-3">Cost by Model ({days} days)</h3>
             {Object.keys(costs.by_model).length === 0 ? (

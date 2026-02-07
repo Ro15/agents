@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppState } from "../state";
 import { Card } from "../components/Card";
 import { Button } from "../components/Button";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Skeleton } from "../components/Skeleton";
 import { useToast } from "../components/Toast";
+import { useApiData } from "../hooks/useApiData";
 import { listConnectors, createConnector, deleteConnector, testConnector, syncConnector } from "../lib/api";
 import type { DataConnector } from "../types";
 
@@ -20,34 +22,29 @@ const CONNECTOR_TYPES = [
   { value: "api", label: "REST API" },
 ];
 
+const statusTone = (status: string): "info" | "warning" | "critical" | "success" | "neutral" => {
+  if (status === "connected") return "success";
+  if (status === "error") return "critical";
+  return "neutral";
+};
+
 export const ConnectorsPage: React.FC = () => {
   const { activePlugin } = useAppState();
   const navigate = useNavigate();
   const { push } = useToast();
-  const [connectors, setConnectors] = useState<DataConnector[]>([]);
-  const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState("postgresql");
   const [newUrl, setNewUrl] = useState("");
 
-  const fetchConnectors = async () => {
-    setLoading(true);
-    try {
-      const data = await listConnectors(activePlugin);
-      setConnectors(data);
-    } catch (err: any) {
-      push(err?.message || "Failed to load connectors", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: connectors, loading, setData: setConnectors, refetch } = useApiData(
+    () => listConnectors(activePlugin),
+    [activePlugin],
+  );
 
-  useEffect(() => {
-    fetchConnectors();
-  }, [activePlugin]);
+  const items = connectors ?? [];
 
-  const handleCreate = async () => {
+  const handleCreate = useCallback(async () => {
     if (!newName.trim()) return;
     try {
       const c = await createConnector({
@@ -56,7 +53,7 @@ export const ConnectorsPage: React.FC = () => {
         config: newUrl.trim() ? { url: newUrl.trim() } : {},
         plugin_id: activePlugin,
       });
-      setConnectors((prev) => [c, ...prev]);
+      setConnectors((prev) => (prev ? [c, ...prev] : [c]));
       setShowCreate(false);
       setNewName("");
       setNewUrl("");
@@ -64,61 +61,51 @@ export const ConnectorsPage: React.FC = () => {
     } catch (err: any) {
       push(err?.message || "Failed to create connector", "error");
     }
-  };
+  }, [newName, newType, newUrl, activePlugin, push, setConnectors]);
 
-  const handleTest = async (id: string) => {
+  const handleTest = useCallback(async (id: string) => {
     try {
       const res = await testConnector(id);
       push(`${res.status}: ${res.message}`, res.status === "connected" ? "success" : "info");
       setConnectors((prev) =>
-        prev.map((c) => (c.connector_id === id ? { ...c, status: res.status } : c))
+        prev ? prev.map((c) => (c.connector_id === id ? { ...c, status: res.status } : c)) : prev
       );
     } catch (err: any) {
       push(err?.message || "Test failed", "error");
     }
-  };
+  }, [push, setConnectors]);
 
-  const handleSync = async (id: string) => {
+  const handleSync = useCallback(async (id: string) => {
     try {
       const res = await syncConnector(id);
       push(res.message, "success");
-      fetchConnectors();
+      refetch();
     } catch (err: any) {
       push(err?.message || "Sync failed", "error");
     }
-  };
+  }, [push, refetch]);
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = useCallback(async (id: string) => {
     if (!confirm("Delete this connector?")) return;
     try {
       await deleteConnector(id);
-      setConnectors((prev) => prev.filter((c) => c.connector_id !== id));
+      setConnectors((prev) => prev ? prev.filter((c) => c.connector_id !== id) : prev);
       push("Connector deleted", "success");
     } catch {
       push("Failed to delete", "error");
     }
-  };
-
-  const statusTone = (status: string): "info" | "warning" | "critical" | "success" | "neutral" => {
-    if (status === "connected") return "success";
-    if (status === "error") return "critical";
-    return "neutral";
-  };
+  }, [push, setConnectors]);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Data Connectors</h1>
-          <p className="text-sm text-slate-600">
-            Connect to external databases, APIs, Excel files, and cloud warehouses.
-          </p>
+          <p className="text-sm text-slate-600">Connect to external databases, APIs, Excel files, and cloud warehouses.</p>
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setShowCreate(true)}>Add Connector</Button>
-          <Button variant="secondary" size="sm" onClick={() => navigate("/chat")}>
-            Back to Chat
-          </Button>
+          <Button variant="secondary" size="sm" onClick={() => navigate("/chat")}>Back to Chat</Button>
         </div>
       </div>
 
@@ -138,9 +125,7 @@ export const ConnectorsPage: React.FC = () => {
               onChange={(e) => setNewType(e.target.value)}
             >
               {CONNECTOR_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
+                <option key={t.value} value={t.value}>{t.label}</option>
               ))}
             </select>
             <input
@@ -150,20 +135,22 @@ export const ConnectorsPage: React.FC = () => {
               onChange={(e) => setNewUrl(e.target.value)}
             />
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleCreate}>
-                Create
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setShowCreate(false)}>
-                Cancel
-              </Button>
+              <Button size="sm" onClick={handleCreate}>Create</Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowCreate(false)}>Cancel</Button>
             </div>
           </div>
         </Card>
       )}
 
-      {loading && <p className="text-sm text-slate-500">Loading...</p>}
+      {loading && (
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-20 w-full rounded-xl" />
+          ))}
+        </div>
+      )}
 
-      {!loading && connectors.length === 0 && (
+      {!loading && items.length === 0 && (
         <EmptyState
           title="No connectors"
           description="Add a data source connector to import data from external systems."
@@ -172,42 +159,35 @@ export const ConnectorsPage: React.FC = () => {
         />
       )}
 
-      <div className="space-y-3">
-        {connectors.map((c) => (
-          <Card key={c.connector_id}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div>
-                  <h4 className="text-sm font-semibold text-slate-900">{c.name}</h4>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Badge tone="info">{c.connector_type}</Badge>
-                    <Badge tone={statusTone(c.status)}>{c.status}</Badge>
-                    {c.last_sync_at && (
-                      <span className="text-xs text-slate-400">
-                        Last sync: {new Date(c.last_sync_at).toLocaleString()}
-                      </span>
-                    )}
+      {!loading && (
+        <div className="space-y-3">
+          {items.map((c) => (
+            <Card key={c.connector_id}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-900">{c.name}</h4>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Badge tone="info">{c.connector_type}</Badge>
+                      <Badge tone={statusTone(c.status)}>{c.status}</Badge>
+                      {c.last_sync_at && (
+                        <span className="text-xs text-slate-400">Last sync: {new Date(c.last_sync_at).toLocaleString()}</span>
+                      )}
+                    </div>
                   </div>
                 </div>
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => handleTest(c.connector_id)}>Test</Button>
+                  <Button variant="secondary" size="sm" onClick={() => handleSync(c.connector_id)}>Sync</Button>
+                  <button className="text-xs text-red-500 hover:text-red-700 px-2" onClick={() => handleDelete(c.connector_id)}>
+                    Delete
+                  </button>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <Button variant="ghost" size="sm" onClick={() => handleTest(c.connector_id)}>
-                  Test
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => handleSync(c.connector_id)}>
-                  Sync
-                </Button>
-                <button
-                  className="text-xs text-red-500 hover:text-red-700 px-2"
-                  onClick={() => handleDelete(c.connector_id)}
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

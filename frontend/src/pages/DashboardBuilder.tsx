@@ -1,21 +1,22 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAppState } from "../state";
 import { Card } from "../components/Card";
 import { Button } from "../components/Button";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Skeleton } from "../components/Skeleton";
 import { useToast } from "../components/Toast";
+import { useApiData } from "../hooks/useApiData";
 import {
   listDashboards,
   createDashboard,
   getDashboard,
   deleteDashboard,
   addWidget,
-  updateWidget,
   deleteWidget,
 } from "../lib/api";
-import type { CustomDashboard, DashboardWidget as WidgetType } from "../types";
+import type { CustomDashboard } from "../types";
 
 // ── Dashboard List View ──────────────────────────────────────────
 
@@ -23,33 +24,20 @@ export const DashboardListPage: React.FC = () => {
   const { activePlugin } = useAppState();
   const navigate = useNavigate();
   const { push } = useToast();
-  const [dashboards, setDashboards] = useState<CustomDashboard[]>([]);
-  const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
 
-  const fetchDashboards = async () => {
-    setLoading(true);
-    try {
-      const data = await listDashboards(activePlugin);
-      setDashboards(data);
-    } catch (err: any) {
-      push(err?.message || "Failed to load dashboards", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: dashboards, loading, setData: setDashboards } = useApiData(
+    () => listDashboards(activePlugin),
+    [activePlugin],
+  );
 
-  useEffect(() => {
-    fetchDashboards();
-  }, [activePlugin]);
-
-  const handleCreate = async () => {
+  const handleCreate = useCallback(async () => {
     if (!newTitle.trim()) return;
     try {
       const d = await createDashboard(newTitle.trim(), activePlugin, newDesc.trim() || undefined);
-      setDashboards((prev) => [d, ...prev]);
+      setDashboards((prev) => (prev ? [d, ...prev] : [d]));
       setShowCreate(false);
       setNewTitle("");
       setNewDesc("");
@@ -57,18 +45,20 @@ export const DashboardListPage: React.FC = () => {
     } catch (err: any) {
       push(err?.message || "Failed to create dashboard", "error");
     }
-  };
+  }, [newTitle, newDesc, activePlugin, push, setDashboards]);
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = useCallback(async (id: string) => {
     if (!confirm("Delete this dashboard?")) return;
     try {
       await deleteDashboard(id);
-      setDashboards((prev) => prev.filter((d) => d.dashboard_id !== id));
+      setDashboards((prev) => prev ? prev.filter((d) => d.dashboard_id !== id) : prev);
       push("Dashboard deleted", "success");
     } catch {
       push("Failed to delete", "error");
     }
-  };
+  }, [push, setDashboards]);
+
+  const items = dashboards ?? [];
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
@@ -85,7 +75,6 @@ export const DashboardListPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Create modal */}
       {showCreate && (
         <Card className="mb-6">
           <h3 className="text-sm font-semibold text-slate-900 mb-3">Create Dashboard</h3>
@@ -103,20 +92,22 @@ export const DashboardListPage: React.FC = () => {
               onChange={(e) => setNewDesc(e.target.value)}
             />
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleCreate}>
-                Create
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setShowCreate(false)}>
-                Cancel
-              </Button>
+              <Button size="sm" onClick={handleCreate}>Create</Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowCreate(false)}>Cancel</Button>
             </div>
           </div>
         </Card>
       )}
 
-      {loading && <p className="text-sm text-slate-500">Loading...</p>}
+      {loading && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-32 w-full rounded-xl" />
+          ))}
+        </div>
+      )}
 
-      {!loading && dashboards.length === 0 && (
+      {!loading && items.length === 0 && (
         <EmptyState
           title="No dashboards yet"
           description="Create a dashboard and pin chat answers as widgets."
@@ -125,31 +116,30 @@ export const DashboardListPage: React.FC = () => {
         />
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {dashboards.map((d) => (
-          <Card key={d.dashboard_id} className="cursor-pointer hover:shadow-md transition-shadow">
-            <div onClick={() => navigate(`/dashboards/${d.dashboard_id}`)}>
-              <h3 className="text-sm font-semibold text-slate-900">{d.title}</h3>
-              {d.description && <p className="mt-1 text-xs text-slate-600">{d.description}</p>}
-              <div className="mt-2 flex items-center gap-2">
-                <Badge tone="info">{d.widgets.length} widgets</Badge>
-                <span className="text-xs text-slate-400">
-                  {d.updated_at ? new Date(d.updated_at).toLocaleDateString() : ""}
-                </span>
+      {!loading && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {items.map((d) => (
+            <Card key={d.dashboard_id} className="cursor-pointer hover:shadow-md transition-shadow">
+              <div onClick={() => navigate(`/dashboards/${d.dashboard_id}`)}>
+                <h3 className="text-sm font-semibold text-slate-900">{d.title}</h3>
+                {d.description && <p className="mt-1 text-xs text-slate-600">{d.description}</p>}
+                <div className="mt-2 flex items-center gap-2">
+                  <Badge tone="info">{d.widgets.length} widgets</Badge>
+                  <span className="text-xs text-slate-400">
+                    {d.updated_at ? new Date(d.updated_at).toLocaleDateString() : ""}
+                  </span>
+                </div>
               </div>
-            </div>
-            <button
-              className="mt-2 text-xs text-red-500 hover:text-red-700"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDelete(d.dashboard_id);
-              }}
-            >
-              Delete
-            </button>
-          </Card>
-        ))}
-      </div>
+              <button
+                className="mt-2 text-xs text-red-500 hover:text-red-700"
+                onClick={(e) => { e.stopPropagation(); handleDelete(d.dashboard_id); }}
+              >
+                Delete
+              </button>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
@@ -158,34 +148,20 @@ export const DashboardListPage: React.FC = () => {
 
 export const DashboardDetailPage: React.FC = () => {
   const { dashboardId } = useParams<{ dashboardId: string }>();
-  const { activePlugin, activeDataset } = useAppState();
   const navigate = useNavigate();
   const { push } = useToast();
-  const [dashboard, setDashboard] = useState<CustomDashboard | null>(null);
-  const [loading, setLoading] = useState(false);
   const [showAddWidget, setShowAddWidget] = useState(false);
   const [widgetTitle, setWidgetTitle] = useState("");
   const [widgetQuery, setWidgetQuery] = useState("");
   const [widgetType, setWidgetType] = useState<"chart" | "kpi" | "table">("chart");
 
-  const fetchDashboard = async () => {
-    if (!dashboardId) return;
-    setLoading(true);
-    try {
-      const d = await getDashboard(dashboardId);
-      setDashboard(d);
-    } catch (err: any) {
-      push(err?.message || "Failed to load dashboard", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: dashboard, loading, setData: setDashboard } = useApiData(
+    () => getDashboard(dashboardId!),
+    [dashboardId],
+    { skip: !dashboardId },
+  );
 
-  useEffect(() => {
-    fetchDashboard();
-  }, [dashboardId]);
-
-  const handleAddWidget = async () => {
+  const handleAddWidget = useCallback(async () => {
     if (!dashboardId || !widgetTitle.trim()) return;
     try {
       const w = await addWidget(dashboardId, {
@@ -201,9 +177,9 @@ export const DashboardDetailPage: React.FC = () => {
     } catch (err: any) {
       push(err?.message || "Failed to add widget", "error");
     }
-  };
+  }, [dashboardId, widgetTitle, widgetType, widgetQuery, push, setDashboard]);
 
-  const handleDeleteWidget = async (widgetId: string) => {
+  const handleDeleteWidget = useCallback(async (widgetId: string) => {
     if (!dashboardId) return;
     try {
       await deleteWidget(dashboardId, widgetId);
@@ -214,9 +190,21 @@ export const DashboardDetailPage: React.FC = () => {
     } catch {
       push("Failed to remove widget", "error");
     }
-  };
+  }, [dashboardId, push, setDashboard]);
 
-  if (loading) return <div className="mx-auto max-w-5xl px-6 py-8 text-sm text-slate-500">Loading...</div>;
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-6xl px-6 py-8 space-y-4">
+        <Skeleton className="h-10 w-64" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-40 w-full rounded-xl" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (!dashboard) return <div className="mx-auto max-w-5xl px-6 py-8 text-sm text-slate-500">Dashboard not found</div>;
 
   return (
@@ -228,9 +216,7 @@ export const DashboardDetailPage: React.FC = () => {
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setShowAddWidget(true)}>Add Widget</Button>
-          <Button variant="secondary" size="sm" onClick={() => navigate("/dashboards")}>
-            All Dashboards
-          </Button>
+          <Button variant="secondary" size="sm" onClick={() => navigate("/dashboards")}>All Dashboards</Button>
         </div>
       </div>
 
@@ -255,9 +241,7 @@ export const DashboardDetailPage: React.FC = () => {
                 <button
                   key={t}
                   className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-                    widgetType === t
-                      ? "bg-brand-blue text-white"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    widgetType === t ? "bg-brand-blue text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                   }`}
                   onClick={() => setWidgetType(t)}
                 >
@@ -266,12 +250,8 @@ export const DashboardDetailPage: React.FC = () => {
               ))}
             </div>
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleAddWidget}>
-                Add
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setShowAddWidget(false)}>
-                Cancel
-              </Button>
+              <Button size="sm" onClick={handleAddWidget}>Add</Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowAddWidget(false)}>Cancel</Button>
             </div>
           </div>
         </Card>
@@ -286,27 +266,19 @@ export const DashboardDetailPage: React.FC = () => {
         />
       )}
 
-      {/* Widget grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {dashboard.widgets.map((w) => (
           <Card key={w.widget_id}>
             <div className="flex items-start justify-between">
               <div>
                 <h4 className="text-sm font-semibold text-slate-900">{w.title}</h4>
-                <Badge tone="neutral" className="mt-1">
-                  {w.widget_type}
-                </Badge>
+                <Badge tone="neutral" className="mt-1">{w.widget_type}</Badge>
               </div>
-              <button
-                className="text-xs text-red-500 hover:text-red-700"
-                onClick={() => handleDeleteWidget(w.widget_id)}
-              >
+              <button className="text-xs text-red-500 hover:text-red-700" onClick={() => handleDeleteWidget(w.widget_id)}>
                 Remove
               </button>
             </div>
-            {w.query_text && (
-              <p className="mt-2 text-xs text-slate-600 italic">"{w.query_text}"</p>
-            )}
+            {w.query_text && <p className="mt-2 text-xs text-slate-600 italic">"{w.query_text}"</p>}
             {w.sql && (
               <details className="mt-2">
                 <summary className="cursor-pointer text-xs text-slate-500 hover:text-brand-blue">SQL</summary>

@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppState } from "../state";
 import { Card } from "../components/Card";
 import { Button } from "../components/Button";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Skeleton } from "../components/Skeleton";
 import { useToast } from "../components/Toast";
+import { useApiData } from "../hooks/useApiData";
 import { listSchedules, createSchedule, deleteSchedule, updateSchedule, runScheduleNow } from "../lib/api";
 import type { ScheduledReport } from "../types";
 
@@ -13,8 +15,6 @@ export const SchedulesPage: React.FC = () => {
   const { activePlugin, activeDataset } = useAppState();
   const navigate = useNavigate();
   const { push } = useToast();
-  const [schedules, setSchedules] = useState<ScheduledReport[]>([]);
-  const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [title, setTitle] = useState("");
   const [cron, setCron] = useState("0 8 * * MON");
@@ -22,23 +22,14 @@ export const SchedulesPage: React.FC = () => {
   const [deliveryMethod, setDeliveryMethod] = useState("email");
   const [deliveryTarget, setDeliveryTarget] = useState("");
 
-  const fetchSchedules = async () => {
-    setLoading(true);
-    try {
-      const data = await listSchedules(activePlugin);
-      setSchedules(data);
-    } catch (err: any) {
-      push(err?.message || "Failed to load schedules", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: schedules, loading, setData: setSchedules, refetch } = useApiData(
+    () => listSchedules(activePlugin),
+    [activePlugin],
+  );
 
-  useEffect(() => {
-    fetchSchedules();
-  }, [activePlugin]);
+  const items = schedules ?? [];
 
-  const handleCreate = async () => {
+  const handleCreate = useCallback(async () => {
     if (!title.trim()) return;
     try {
       const s = await createSchedule({
@@ -47,11 +38,9 @@ export const SchedulesPage: React.FC = () => {
         dataset_id: activeDataset?.dataset_id,
         schedule_cron: cron,
         report_type: reportType,
-        delivery: deliveryTarget.trim()
-          ? { method: deliveryMethod, target: deliveryTarget.trim() }
-          : undefined,
+        delivery: deliveryTarget.trim() ? { method: deliveryMethod, target: deliveryTarget.trim() } : undefined,
       });
-      setSchedules((prev) => [s, ...prev]);
+      setSchedules((prev) => (prev ? [s, ...prev] : [s]));
       setShowCreate(false);
       setTitle("");
       setDeliveryTarget("");
@@ -59,54 +48,50 @@ export const SchedulesPage: React.FC = () => {
     } catch (err: any) {
       push(err?.message || "Failed to create schedule", "error");
     }
-  };
+  }, [title, cron, reportType, deliveryMethod, deliveryTarget, activePlugin, activeDataset, push, setSchedules]);
 
-  const handleToggleEnabled = async (s: ScheduledReport) => {
+  const handleToggleEnabled = useCallback(async (s: ScheduledReport) => {
     try {
-      const updated = await updateSchedule(s.report_id, { enabled: !s.enabled } as any);
+      const updated = await updateSchedule(s.report_id, { enabled: !s.enabled });
       setSchedules((prev) =>
-        prev.map((x) => (x.report_id === s.report_id ? updated : x))
+        prev ? prev.map((x) => (x.report_id === s.report_id ? updated : x)) : prev
       );
     } catch {
       push("Failed to update", "error");
     }
-  };
+  }, [push, setSchedules]);
 
-  const handleRunNow = async (id: string) => {
+  const handleRunNow = useCallback(async (id: string) => {
     try {
       const res = await runScheduleNow(id);
       push(`Report triggered at ${res.run_at}`, "success");
-      fetchSchedules();
+      refetch();
     } catch (err: any) {
       push(err?.message || "Failed to trigger", "error");
     }
-  };
+  }, [push, refetch]);
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = useCallback(async (id: string) => {
     if (!confirm("Delete this schedule?")) return;
     try {
       await deleteSchedule(id);
-      setSchedules((prev) => prev.filter((s) => s.report_id !== id));
+      setSchedules((prev) => prev ? prev.filter((s) => s.report_id !== id) : prev);
       push("Schedule deleted", "success");
     } catch {
       push("Failed to delete", "error");
     }
-  };
+  }, [push, setSchedules]);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Scheduled Reports</h1>
-          <p className="text-sm text-slate-600">
-            Set up recurring insight runs, queries, and alerts delivered via email, Slack, or webhooks.
-          </p>
+          <p className="text-sm text-slate-600">Set up recurring insight runs, queries, and alerts delivered via email, Slack, or webhooks.</p>
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setShowCreate(true)}>New Schedule</Button>
-          <Button variant="secondary" size="sm" onClick={() => navigate("/chat")}>
-            Back to Chat
-          </Button>
+          <Button variant="secondary" size="sm" onClick={() => navigate("/chat")}>Back to Chat</Button>
         </div>
       </div>
 
@@ -123,19 +108,11 @@ export const SchedulesPage: React.FC = () => {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-slate-600 mb-1">Schedule (cron)</label>
-                <input
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none"
-                  value={cron}
-                  onChange={(e) => setCron(e.target.value)}
-                />
+                <input className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none" value={cron} onChange={(e) => setCron(e.target.value)} />
               </div>
               <div>
                 <label className="block text-xs text-slate-600 mb-1">Report type</label>
-                <select
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  value={reportType}
-                  onChange={(e) => setReportType(e.target.value as any)}
-                >
+                <select className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" value={reportType} onChange={(e) => setReportType(e.target.value as typeof reportType)}>
                   <option value="insights">Insights</option>
                   <option value="query">Query</option>
                   <option value="dashboard">Dashboard</option>
@@ -145,11 +122,7 @@ export const SchedulesPage: React.FC = () => {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-slate-600 mb-1">Delivery method</label>
-                <select
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  value={deliveryMethod}
-                  onChange={(e) => setDeliveryMethod(e.target.value)}
-                >
+                <select className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" value={deliveryMethod} onChange={(e) => setDeliveryMethod(e.target.value)}>
                   <option value="email">Email</option>
                   <option value="slack">Slack</option>
                   <option value="webhook">Webhook</option>
@@ -157,29 +130,26 @@ export const SchedulesPage: React.FC = () => {
               </div>
               <div>
                 <label className="block text-xs text-slate-600 mb-1">Target (email/URL)</label>
-                <input
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none"
-                  placeholder="user@example.com"
-                  value={deliveryTarget}
-                  onChange={(e) => setDeliveryTarget(e.target.value)}
-                />
+                <input className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none" placeholder="user@example.com" value={deliveryTarget} onChange={(e) => setDeliveryTarget(e.target.value)} />
               </div>
             </div>
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleCreate}>
-                Create
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setShowCreate(false)}>
-                Cancel
-              </Button>
+              <Button size="sm" onClick={handleCreate}>Create</Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowCreate(false)}>Cancel</Button>
             </div>
           </div>
         </Card>
       )}
 
-      {loading && <p className="text-sm text-slate-500">Loading...</p>}
+      {loading && (
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-20 w-full rounded-xl" />
+          ))}
+        </div>
+      )}
 
-      {!loading && schedules.length === 0 && (
+      {!loading && items.length === 0 && (
         <EmptyState
           title="No schedules"
           description="Create a scheduled report to receive automated insights."
@@ -188,52 +158,37 @@ export const SchedulesPage: React.FC = () => {
         />
       )}
 
-      <div className="space-y-3">
-        {schedules.map((s) => (
-          <Card key={s.report_id}>
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-semibold text-slate-900">{s.title}</h4>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <Badge tone="info">{s.report_type}</Badge>
-                  <Badge tone={s.enabled ? "success" : "neutral"}>
-                    {s.enabled ? "Active" : "Paused"}
-                  </Badge>
-                  <span className="text-xs text-slate-500 font-mono">{s.schedule_cron}</span>
-                  {s.delivery && (
-                    <span className="text-xs text-slate-500">
-                      via {s.delivery.method} → {s.delivery.target}
-                    </span>
+      {!loading && (
+        <div className="space-y-3">
+          {items.map((s) => (
+            <Card key={s.report_id}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-900">{s.title}</h4>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <Badge tone="info">{s.report_type}</Badge>
+                    <Badge tone={s.enabled ? "success" : "neutral"}>{s.enabled ? "Active" : "Paused"}</Badge>
+                    <span className="text-xs text-slate-500 font-mono">{s.schedule_cron}</span>
+                    {s.delivery && (
+                      <span className="text-xs text-slate-500">via {s.delivery.method} → {s.delivery.target}</span>
+                    )}
+                  </div>
+                  {s.last_run_at && (
+                    <p className="mt-1 text-xs text-slate-400">Last run: {new Date(s.last_run_at).toLocaleString()}</p>
                   )}
                 </div>
-                {s.last_run_at && (
-                  <p className="mt-1 text-xs text-slate-400">
-                    Last run: {new Date(s.last_run_at).toLocaleString()}
-                  </p>
-                )}
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => handleToggleEnabled(s)}>
+                    {s.enabled ? "Pause" : "Enable"}
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => handleRunNow(s.report_id)}>Run Now</Button>
+                  <button className="text-xs text-red-500 hover:text-red-700 px-2" onClick={() => handleDelete(s.report_id)}>Delete</button>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleToggleEnabled(s)}
-                >
-                  {s.enabled ? "Pause" : "Enable"}
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => handleRunNow(s.report_id)}>
-                  Run Now
-                </Button>
-                <button
-                  className="text-xs text-red-500 hover:text-red-700 px-2"
-                  onClick={() => handleDelete(s.report_id)}
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

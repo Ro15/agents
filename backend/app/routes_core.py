@@ -1,0 +1,680 @@
+"""
+Core API routes — the original endpoints for chat, upload, datasets,
+plugins, insights, jobs, dashboard stats, and health.
+"""
+
+import io
+import json
+import logging
+import os
+import re
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List
+from uuid import uuid4, UUID
+
+import pandas as pd
+from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Query, Header, BackgroundTasks, Request
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.database import engine, SessionLocal
+from app import nl_to_sql
+from app.insight_engine import InsightEngine
+from app.models import (
+    SalesTransaction, IngestionRun, Dataset, Job,
+)
+from app.helpers import (
+    parse_uuid,
+    get_last_updated,
+    get_dataset_or_400,
+    dataset_to_meta,
+    ensure_active_plugin,
+    record_audit_log,
+    persist_generated_insights,
+    fetch_latest_insights,
+    maybe_answer_with_cached_insights,
+    create_job,
+    update_job_status,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# Insight engine cache keyed by plugin name
+INSIGHT_ENGINES: dict[str, InsightEngine] = {}
+
+UPLOAD_ROOT = Path("/tmp/uploads")
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+# ── Dependencies ────────────────────────────────────────────────────────
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_insight_engine_for_plugin(plugin_name: str) -> InsightEngine:
+    if plugin_name not in INSIGHT_ENGINES:
+        active_plugin = ensure_active_plugin(plugin_name)
+        INSIGHT_ENGINES[plugin_name] = InsightEngine(active_plugin)
+    return INSIGHT_ENGINES[plugin_name]
+
+
+# ── Pydantic models ────────────────────────────────────────────────────
+
+class ChatQuery(BaseModel):
+    query: str
+    plugin: str = "restaurant"
+    dataset_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    conversation_history: Optional[List[dict]] = None
+
+
+class PluginSwitchRequest(BaseModel):
+    plugin: str
+
+
+class InsightRunRequest(BaseModel):
+    plugin: Optional[str] = None
+    dataset_id: Optional[str] = None
+    limit: Optional[int] = 20
+
+
+# ── Insights ────────────────────────────────────────────────────────────
+
+@router.post("/insights/run")
+def run_insights(request: InsightRunRequest, db: Session = Depends(get_db)):
+    t0 = time.time()
+    try:
+        active_plugin = ensure_active_plugin(request.plugin)
+        ds = get_dataset_or_400(db, request.dataset_id, active_plugin.plugin_name)
+        ie = get_insight_engine_for_plugin(active_plugin.plugin_name)
+        generated = ie.run_all_insights(db, dataset_id=str(ds.dataset_id))
+        if request.limit:
+            generated = generated[: request.limit]
+        run_id = persist_generated_insights(db, generated, active_plugin.plugin_name, request.dataset_id) if generated else None
+        record_audit_log(
+            db, plugin_id=active_plugin.plugin_name, dataset_id=request.dataset_id,
+            user_question="insights_run", intent="insights_run", generated_sql=None,
+            sql_valid=True, execution_ms=int((time.time() - t0) * 1000),
+            rows_returned=len(generated), confidence="medium", failure_reason=None, model_name=None,
+        )
+        return {"plugin": active_plugin.plugin_name, "run_id": run_id, "count": len(generated), "insights": [ie.to_dict(i) for i in generated]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error running insights: {e}")
+        record_audit_log(
+            db, plugin_id=request.plugin, dataset_id=request.dataset_id,
+            user_question="insights_run", intent="insights_run", generated_sql=None,
+            sql_valid=False, execution_ms=int((time.time() - t0) * 1000),
+            rows_returned=None, confidence="low", failure_reason=str(e), model_name=None,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/insights/latest")
+def latest_insights(
+    plugin: Optional[str] = Query(None),
+    dataset_id: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    try:
+        active_plugin = ensure_active_plugin(plugin)
+        get_dataset_or_400(db, dataset_id, active_plugin.plugin_name)
+        insights = fetch_latest_insights(db, active_plugin.plugin_name, dataset_id, limit)
+        return {"plugin": active_plugin.plugin_name, "count": len(insights), "insights": insights}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving insights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Upload ──────────────────────────────────────────────────────────────
+
+@router.post("/upload/sales")
+async def upload_sales_data(
+    file: UploadFile = File(...),
+    dataset_id: Optional[str] = Query(None),
+    x_plugin: Optional[str] = Header(None),
+    mode: str = Query("sync"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+):
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    try:
+        active_plugin = ensure_active_plugin(x_plugin)
+        plugin_id = active_plugin.plugin_name
+        try:
+            dataset_uuid = uuid4() if dataset_id is None else UUID(str(dataset_id))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid dataset_id format")
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+        DEFAULT_COLUMN_MAPPING = {
+            'order_id': 'order_id', 'order_datetime': 'order_datetime', 'item_name': 'item_name',
+            'category': 'category', 'quantity': 'quantity', 'item_price': 'item_price',
+            'total_line_amount': 'total_line_amount', 'payment_type': 'payment_type',
+            'discount_amount': 'discount_amount', 'tax_amount': 'tax_amount',
+        }
+        REQUIRED_COLUMNS = ['order_id', 'order_datetime', 'item_name', 'quantity', 'item_price', 'total_line_amount']
+        df.rename(columns=DEFAULT_COLUMN_MAPPING, inplace=True)
+        missing_columns = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+        if missing_columns:
+            raise HTTPException(status_code=400, detail=f"Missing required columns: {', '.join(missing_columns)}")
+        df['order_datetime'] = pd.to_datetime(df['order_datetime'])
+        df['dataset_id'] = dataset_uuid
+        df['id'] = [uuid4() for _ in range(len(df))]
+        df.to_sql(SalesTransaction.__tablename__, engine, if_exists='append', index=False)
+        existing = db.query(Dataset).filter(Dataset.dataset_id == dataset_uuid).first()
+        now_ts = datetime.utcnow()
+        if existing:
+            dataset_obj = existing
+            dataset_obj.plugin_id = plugin_id
+        else:
+            dataset_obj = Dataset(
+                dataset_id=dataset_uuid, plugin_id=plugin_id,
+                dataset_name=os.path.splitext(file.filename)[0], created_at=now_ts,
+            )
+        dataset_obj.last_ingested_at = now_ts
+        dataset_obj.row_count = len(df)
+        dataset_obj.source_filename = file.filename
+        dataset_obj.is_deleted = False
+        dataset_obj.version = (dataset_obj.version or 1) + 1
+        dataset_obj = db.merge(dataset_obj)
+        ingestion_record = IngestionRun(
+            dataset_name="sales", filename=file.filename, row_count=len(df),
+            plugin_id=plugin_id, dataset_id=dataset_obj.dataset_id,
+        )
+        db.add(ingestion_record)
+        db.commit()
+        db.refresh(ingestion_record)
+        db.refresh(dataset_obj)
+        meta = dataset_to_meta(dataset_obj)
+        meta["message"] = f"Successfully uploaded and ingested {len(df)} rows from {file.filename}."
+        meta["ingested_at"] = ingestion_record.ingested_at.isoformat() if ingestion_record.ingested_at else None
+        return meta
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error processing file {file.filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+
+
+# ── Datasets ────────────────────────────────────────────────────────────
+
+@router.get("/datasets")
+def list_datasets_endpoint(plugin_id: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    query = db.query(Dataset).filter(Dataset.is_deleted == False)  # noqa: E712
+    if plugin_id:
+        query = query.filter(Dataset.plugin_id == plugin_id)
+    return [dataset_to_meta(ds) for ds in query.order_by(Dataset.created_at.desc()).all()]
+
+
+@router.get("/datasets/{dataset_id}")
+def get_dataset(dataset_id: str, db: Session = Depends(get_db)):
+    ds_uuid = parse_uuid(dataset_id, "dataset_id")
+    ds = db.query(Dataset).filter(Dataset.dataset_id == ds_uuid, Dataset.is_deleted == False).first()  # noqa: E712
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return dataset_to_meta(ds)
+
+
+@router.delete("/datasets/{dataset_id}")
+def soft_delete_dataset(dataset_id: str, db: Session = Depends(get_db)):
+    ds_uuid = parse_uuid(dataset_id, "dataset_id")
+    ds = db.query(Dataset).filter(Dataset.dataset_id == ds_uuid).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    ds.is_deleted = True
+    db.add(ds)
+    db.commit()
+    return {"status": "deleted", "dataset_id": dataset_id}
+
+
+# ── Jobs ────────────────────────────────────────────────────────────────
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.job_id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": str(job.job_id), "job_type": job.job_type, "plugin_id": job.plugin_id,
+        "dataset_id": str(job.dataset_id) if job.dataset_id else None, "status": job.status,
+        "created_at": job.created_at, "started_at": job.started_at, "finished_at": job.finished_at,
+        "progress_pct": job.progress_pct, "result": job.result, "failure_reason": job.failure_reason,
+    }
+
+
+@router.get("/jobs")
+def list_jobs(plugin_id: Optional[str] = None, status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
+    q = db.query(Job)
+    if plugin_id:
+        q = q.filter(Job.plugin_id == plugin_id)
+    if status:
+        q = q.filter(Job.status == status)
+    return [
+        {
+            "job_id": str(j.job_id), "job_type": j.job_type, "status": j.status,
+            "plugin_id": j.plugin_id, "dataset_id": str(j.dataset_id) if j.dataset_id else None,
+            "created_at": j.created_at, "result": j.result, "failure_reason": j.failure_reason,
+        }
+        for j in q.order_by(Job.created_at.desc()).limit(limit).all()
+    ]
+
+
+# ── Chat ────────────────────────────────────────────────────────────────
+
+@router.post("/chat")
+def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = Depends(get_db)):
+    from app.routes_v2 import check_rate_limit, log_llm_cost, record_query_history, save_conversation_message, get_conversation_history
+
+    # Rate limiting
+    client_ip = request.client.host if request and request.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait before sending more requests.")
+
+    last_updated = get_last_updated(db)
+    t0 = time.time()
+    generated_sql = None
+
+    try:
+        active_plugin = ensure_active_plugin(chat_query.plugin)
+        dataset_id = chat_query.dataset_id
+        ds = get_dataset_or_400(db, dataset_id, active_plugin.plugin_name)
+        dataset_version = ds.version
+
+        # Multi-turn: resolve conversation history
+        conversation_history = chat_query.conversation_history or []
+        thread_id = None
+        if chat_query.conversation_id:
+            try:
+                thread_id = UUID(str(chat_query.conversation_id))
+                if not conversation_history:
+                    conversation_history = get_conversation_history(db, thread_id)
+            except Exception:
+                logger.debug(f"Invalid conversation_id: {chat_query.conversation_id}")
+
+        # Try cached insights first
+        cached_response = maybe_answer_with_cached_insights(chat_query.query, active_plugin.plugin_name, dataset_id, db, last_updated)
+        if cached_response:
+            return cached_response
+
+        # Generate SQL
+        generation = nl_to_sql.generate_sql(
+            chat_query.query, dataset_id=str(ds.dataset_id),
+            dataset_version=dataset_version, conversation_history=conversation_history,
+        )
+        generated_sql = generation.sql
+
+        if generation.intent != "analytics_query" or not generated_sql:
+            record_audit_log(
+                db, plugin_id=active_plugin.plugin_name, dataset_id=dataset_id,
+                user_question=chat_query.query, intent=generation.intent, generated_sql=None,
+                sql_valid=False, execution_ms=int((time.time() - t0) * 1000),
+                rows_returned=None, confidence=generation.confidence,
+                failure_reason=generation.failure_reason or "unsupported_intent",
+                model_name=generation.model_name,
+            )
+            return {
+                "answer_type": "text",
+                "answer": "I need more context to answer that. Please ask a data question related to the plugin.",
+                "explanation": generation.failure_reason or "Question not supported.",
+                "sql": None, "data_last_updated": last_updated,
+                "confidence": generation.confidence, "plugin": active_plugin.plugin_name,
+                "assumptions": generation.assumptions,
+            }
+
+        # Execute SQL
+        scoped_sql = nl_to_sql.SQL_GUARD.enforce_dataset_filter(generated_sql, "dataset_id")
+        scoped_sql = re.sub(
+            r"DATE\('(\d{4}-\d{2}-\d{2})'\s*-\s*INTERVAL\s*'(\d+\s+day[s]?)'\)",
+            r"(DATE '\1' - INTERVAL '\2')", scoped_sql, flags=re.IGNORECASE,
+        )
+        conn = db.connection()
+        conn.execute(text("SET statement_timeout = '5s';"))
+
+        from cache.cache import stable_hash, cache_get, cache_set, DB_RESULT_CACHE_TTL_SECONDS
+        params = {"dataset_id": ds.dataset_id}
+        hash_params = {"dataset_id": str(ds.dataset_id)}
+        sql_norm = scoped_sql.strip().rstrip(";")
+        db_key = stable_hash({"ds": str(ds.dataset_id), "v": dataset_version, "sql": sql_norm, "params": hash_params})
+        db_cache_hit = False
+
+        def _serialize_val(v):
+            return str(v) if isinstance(v, UUID) else v
+
+        def _serialize_payload(payload):
+            if payload.get("type") == "scalar":
+                return {"type": "scalar", "value": _serialize_val(payload.get("value")), "row_count": payload.get("row_count", 1)}
+            if payload.get("type") == "table":
+                rows = payload.get("rows", [])
+                return {"type": "table", "rows": [{k: _serialize_val(v) for k, v in dict(r).items()} for r in rows], "row_count": payload.get("row_count", len(rows))}
+            return payload
+
+        cached = cache_get("db_result", db_key)
+        if cached is not None:
+            db_cache_hit = True
+            result_payload = _serialize_payload(cached)
+        else:
+            rows = conn.execute(text(sql_norm), params).fetchall()
+            if len(rows) == 1 and len(rows[0]) == 1:
+                result_payload = {"type": "scalar", "value": _serialize_val(rows[0][0]), "row_count": 1}
+            else:
+                result_payload = {
+                    "type": "table",
+                    "rows": [{k: _serialize_val(v) for k, v in dict(r).items()} for r in rows],
+                    "row_count": len(rows),
+                }
+            cache_set("db_result", db_key, _serialize_payload(result_payload), DB_RESULT_CACHE_TTL_SECONDS)
+
+        answer_type = generation.answer_type or ("number" if result_payload["type"] == "scalar" else "table")
+        if result_payload["type"] == "scalar":
+            val = result_payload["value"]
+            answer = 0 if val is None else val
+        else:
+            answer = result_payload["rows"]
+
+        exec_ms = int((time.time() - t0) * 1000)
+        record_audit_log(
+            db, plugin_id=active_plugin.plugin_name, dataset_id=dataset_id,
+            user_question=chat_query.query, intent=generation.intent, generated_sql=scoped_sql,
+            sql_valid=True, execution_ms=exec_ms, rows_returned=result_payload["row_count"],
+            confidence=generation.confidence, failure_reason=None, model_name=generation.model_name,
+        )
+
+        # Chart hint
+        chart_hint = getattr(generation, "chart_hint", "none") or "none"
+        summary = getattr(generation, "summary", "") or ""
+        if chart_hint == "none" and answer_type == "table" and isinstance(answer, list) and len(answer) > 0:
+            cols = list(answer[0].keys())
+            time_keywords = {"date", "day", "month", "year", "week", "hour", "time", "period", "quarter"}
+            has_time = any(any(kw in c.lower() for kw in time_keywords) for c in cols)
+            num_cols = [c for c in cols if isinstance(answer[0].get(c), (int, float))]
+            if has_time:
+                chart_hint = "line" if len(num_cols) <= 1 else "area"
+            elif len(answer) <= 8 and len(num_cols) == 1:
+                chart_hint = "pie"
+            elif len(num_cols) >= 1:
+                chart_hint = "bar"
+        if not summary:
+            if answer_type == "table" and isinstance(answer, list):
+                summary = f"Returned {len(answer)} rows."
+            elif answer_type == "number":
+                summary = f"The result is {answer}."
+
+        # Narrative generation
+        narrative = ""
+        try:
+            from app.llm_service import generate_narrative, LLMConfig
+            cfg = LLMConfig()
+            if cfg.available:
+                narrative = generate_narrative(question=chat_query.query, sql=scoped_sql, result_data=answer, answer_type=answer_type, config=cfg)
+                input_est = len(chat_query.query) // 4 + len(scoped_sql) // 4 + 200
+                output_est = len(narrative) // 4 if narrative else 0
+                log_llm_cost(db, active_plugin.plugin_name, cfg.model, input_est, output_est, "/chat/narrative")
+        except Exception as e:
+            logger.warning(f"Narrative generation skipped: {e}")
+
+        # Record query history
+        history_id = None
+        try:
+            history_id = record_query_history(
+                db, plugin_id=active_plugin.plugin_name, dataset_id=dataset_id,
+                question=chat_query.query, sql=scoped_sql, answer_type=answer_type,
+                answer_summary=narrative or summary, confidence=generation.confidence,
+            )
+        except Exception as e:
+            logger.warning(f"Query history recording failed: {e}")
+
+        # Multi-turn: persist messages
+        if thread_id:
+            try:
+                save_conversation_message(db, thread_id, "user", chat_query.query)
+                save_conversation_message(db, thread_id, "assistant", narrative or summary or str(answer)[:500], sql=scoped_sql, answer_type=answer_type)
+            except Exception as e:
+                logger.warning(f"Conversation message persistence failed: {e}")
+
+        # LLM cost tracking for SQL generation
+        try:
+            from app.llm_service import LLMConfig as _LLMCfg
+            _cfg = _LLMCfg()
+            log_llm_cost(db, active_plugin.plugin_name, _cfg.model, len(chat_query.query) // 4 + 300, len(scoped_sql) // 4 if scoped_sql else 0, "/chat/sql")
+        except Exception:
+            pass
+
+        return {
+            "answer_type": answer_type, "answer": answer, "explanation": "Validated SQL executed against dataset.",
+            "summary": summary, "narrative": narrative, "chart_hint": chart_hint, "sql": scoped_sql,
+            "data_last_updated": last_updated, "confidence": generation.confidence,
+            "plugin": active_plugin.plugin_name, "assumptions": generation.assumptions,
+            "dataset_filter_enforced": True,
+            "conversation_id": str(thread_id) if thread_id else None,
+            "history_id": str(history_id) if history_id else None,
+            "cache": {
+                "llm_sql": {"hit": generation.cache_info.get("llm_cache_hit", False), "key": generation.cache_info.get("llm_cache_key")},
+                "db_result": {"hit": db_cache_hit, "key": db_key[:8]},
+            },
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        record_audit_log(
+            db, plugin_id=chat_query.plugin, dataset_id=chat_query.dataset_id,
+            user_question=chat_query.query, intent="analytics_query", generated_sql=generated_sql,
+            sql_valid=False, execution_ms=int((time.time() - t0) * 1000),
+            rows_returned=None, confidence="low", failure_reason=str(e), model_name=None,
+        )
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error during chat processing: {e}")
+        record_audit_log(
+            db, plugin_id=chat_query.plugin, dataset_id=chat_query.dataset_id,
+            user_question=chat_query.query, intent="analytics_query", generated_sql=generated_sql,
+            sql_valid=False, execution_ms=int((time.time() - t0) * 1000),
+            rows_returned=None, confidence="low", failure_reason=str(e), model_name=None,
+        )
+        return {
+            "answer": "I'm sorry, but I encountered an error trying to answer your question.",
+            "confidence": "low", "sql": generated_sql, "explanation": str(e),
+            "plugin": None, "dataset_filter_enforced": True,
+        }
+
+
+# ── Plugins ─────────────────────────────────────────────────────────────
+
+@router.post("/plugin/switch")
+def switch_plugin(req: PluginSwitchRequest):
+    try:
+        if nl_to_sql.set_active_plugin(req.plugin):
+            active_plugin = nl_to_sql.get_active_plugin()
+            return {"status": "success", "plugin": active_plugin.plugin_name, "tables": list(active_plugin.get_allowed_tables()), "metrics": list(active_plugin.metrics.keys())}
+        raise HTTPException(status_code=404, detail=f"Plugin '{req.plugin}' not found")
+    except Exception as e:
+        logger.error(f"Error switching plugin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/plugins")
+def list_plugins():
+    try:
+        summaries = nl_to_sql.PLUGIN_MANAGER.list_summaries() if nl_to_sql.PLUGIN_MANAGER else []
+        active_plugin = nl_to_sql.ACTIVE_PLUGIN.plugin_name if nl_to_sql.ACTIVE_PLUGIN else None
+        return {"plugins": summaries, "active_plugin": active_plugin}
+    except Exception as e:
+        logger.error(f"Error listing plugins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/plugins/{plugin_id}")
+def get_plugin_detail(plugin_id: str):
+    try:
+        plugin = nl_to_sql.PLUGIN_MANAGER.get_plugin(plugin_id) if nl_to_sql.PLUGIN_MANAGER else None
+        if not plugin:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+        defn = plugin.to_definition()
+        return {
+            "id": defn.id, "name": defn.name, "description": defn.description, "domains": defn.domains,
+            "required_columns": defn.required_columns, "sample_csvs": defn.sample_csvs,
+            "tables": list(defn.tables.keys()), "primary_time_column": defn.primary_time_column,
+            "metrics": list(defn.metrics.keys()), "question_packs": list(defn.question_packs.keys()),
+            "policy": defn.policy.__dict__ if defn.policy else {},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting plugin detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/plugins/{plugin_id}/views")
+def get_plugin_views(plugin_id: str):
+    try:
+        plugin = nl_to_sql.PLUGIN_MANAGER.get_plugin(plugin_id) if nl_to_sql.PLUGIN_MANAGER else None
+        if not plugin:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+        return {"plugin": plugin_id, "views": getattr(plugin, "compiled_views", [])}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/plugins/{plugin_id}/questions")
+def get_plugin_questions(plugin_id: str):
+    try:
+        plugin = nl_to_sql.PLUGIN_MANAGER.get_plugin(plugin_id) if nl_to_sql.PLUGIN_MANAGER else None
+        if not plugin:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+        return [
+            {"id": name, "title": pack.description or name, "questions": [p.pattern for p in pack.patterns]}
+            for name, pack in plugin.question_packs.items()
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/plugin/info")
+def get_plugin_info():
+    try:
+        active_plugin = nl_to_sql.get_active_plugin()
+        return {
+            "plugin_name": active_plugin.plugin_name,
+            "tables": list(active_plugin.get_allowed_tables()),
+            "columns": list(active_plugin.get_allowed_columns()),
+            "metrics": list(active_plugin.metrics.keys()),
+            "question_packs": list(active_plugin.question_packs.keys()),
+            "policy": {
+                "allowed_question_types": active_plugin.policy.allowed_question_types,
+                "forbidden_topics": active_plugin.policy.forbidden_topics,
+                "enable_forecasting": active_plugin.policy.enable_forecasting,
+                "enable_predictions": active_plugin.policy.enable_predictions,
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Dashboard stats ─────────────────────────────────────────────────────
+
+@router.get("/dashboard/stats")
+def get_dashboard_stats(
+    plugin: str = Query(...),
+    dataset_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    try:
+        query_filter = "WHERE plugin_id = :plugin"
+        params: dict = {"plugin": plugin}
+        if dataset_id:
+            query_filter += " AND dataset_id = :dsid"
+            params["dsid"] = dataset_id
+
+        row = db.execute(
+            text(f"SELECT COUNT(*) AS cnt, "
+                 f"ROUND(AVG(CASE WHEN confidence='high' THEN 3 WHEN confidence='medium' THEN 2 ELSE 1 END),1) AS avg_c "
+                 f"FROM ai_audit_log {query_filter}"),
+            params,
+        ).fetchone()
+        total_queries = int(row[0]) if row else 0
+        avg_score = float(row[1]) if row and row[1] else 0
+        avg_confidence = "high" if avg_score >= 2.5 else ("medium" if avg_score >= 1.5 else "low")
+
+        total_rows = 0
+        if dataset_id:
+            ds_row = db.execute(text("SELECT row_count FROM datasets WHERE dataset_id = :dsid AND is_deleted = false"), {"dsid": dataset_id}).fetchone()
+            total_rows = int(ds_row[0]) if ds_row and ds_row[0] else 0
+
+        query_volume = []
+        try:
+            vol_rows = db.execute(
+                text(f"SELECT DATE(created_at) AS d, COUNT(*) AS cnt FROM ai_audit_log {query_filter} GROUP BY DATE(created_at) ORDER BY d DESC LIMIT 14"),
+                params,
+            ).fetchall()
+            query_volume = [{"date": str(r[0]), "count": int(r[1])} for r in reversed(vol_rows)]
+        except Exception:
+            pass
+
+        recent_trend = []
+        if dataset_id:
+            try:
+                trend_rows = db.execute(
+                    text("SELECT DATE(order_datetime) AS d, SUM(quantity * item_price) AS rev FROM sales_transactions WHERE dataset_id = :dsid GROUP BY DATE(order_datetime) ORDER BY d LIMIT 30"),
+                    {"dsid": dataset_id},
+                ).fetchall()
+                recent_trend = [{"date": str(r[0]), "value": float(r[1] or 0)} for r in trend_rows]
+            except Exception:
+                pass
+
+        top_categories = []
+        if dataset_id:
+            try:
+                cat_rows = db.execute(
+                    text("SELECT COALESCE(category, 'Other') AS cat, SUM(quantity * item_price) AS rev FROM sales_transactions WHERE dataset_id = :dsid GROUP BY COALESCE(category, 'Other') ORDER BY rev DESC LIMIT 8"),
+                    {"dsid": dataset_id},
+                ).fetchall()
+                top_categories = [{"name": str(r[0]), "value": float(r[1] or 0)} for r in cat_rows]
+            except Exception:
+                pass
+
+        return {
+            "total_rows": total_rows, "total_queries": total_queries,
+            "avg_confidence": avg_confidence, "top_categories": top_categories,
+            "recent_trend": recent_trend, "query_volume": query_volume,
+        }
+    except Exception as e:
+        logger.error(f"Error computing dashboard stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Health ──────────────────────────────────────────────────────────────
+
+@router.get("/")
+def read_root():
+    return {"message": "Restaurant Data Analyst Chat API is running."}
+
+
+@router.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        plugin_count = len(nl_to_sql.PLUGIN_MANAGER.plugins) if nl_to_sql.PLUGIN_MANAGER else 0
+        return {"status": "ok", "database_connection": "successful", "plugins_loaded": plugin_count}
+    except Exception as e:
+        return {"status": "error", "database_connection": "failed", "error": str(e)}

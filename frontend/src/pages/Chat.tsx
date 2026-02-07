@@ -145,7 +145,7 @@ export const ChatPage: React.FC = () => {
     try {
       await submitFeedback({
         plugin_id: activePlugin,
-        question: messages[msgIdx - 1]?.role === "user" ? (messages[msgIdx - 1].content as string) : "",
+        question: msgIdx > 0 && messages[msgIdx - 1]?.role === "user" ? (messages[msgIdx - 1].content as string) : "",
         original_sql: resp.sql,
         rating,
         query_history_id: resp.history_id,
