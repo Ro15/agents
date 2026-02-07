@@ -24,6 +24,7 @@ export const Dashboard: React.FC<Props> = ({ onOpenDatasetPicker }) => {
     activePlugin,
     setActivePlugin,
     activeDataset,
+    setActiveDataset,
     setActiveDatasetId,
     datasetListsByPlugin,
     setDatasetListForPlugin,
@@ -61,12 +62,13 @@ export const Dashboard: React.FC<Props> = ({ onOpenDatasetPicker }) => {
       const res = await uploadSalesAuto(activePlugin, file);
       if (res.asyncUsed && res.job_id) {
         setStatus(`Upload queued (job ${res.job_id}). Track progress in Jobs/Datasets.`);
-      } else if (res.dataset_id) {
-        // sync fallback already returns dataset; refresh list
-        const remote = await listDatasets(activePlugin);
-        setDatasetListForPlugin(activePlugin, remote);
-        setActiveDatasetId(res.dataset_id);
+      } else if (res.dataset) {
+        // ensure the new dataset is in the local list immediately, then activate it
+        upsertDatasetForPlugin(activePlugin, res.dataset);
+        setActiveDataset(res.dataset);
         setStatus(`Uploaded ${file.name}`);
+        // refresh list in background so we pick up any server-side metadata
+        listDatasets(activePlugin).then((remote) => setDatasetListForPlugin(activePlugin, remote)).catch(() => {});
       }
     } catch (err: any) {
       setStatus(err?.message || "Upload failed");
@@ -86,11 +88,13 @@ export const Dashboard: React.FC<Props> = ({ onOpenDatasetPicker }) => {
       const blob = await sampleFetch.blob();
       const file = new File([blob], `${activePlugin}_sample.csv`, { type: "text/csv" });
       const uploadRes = await uploadSalesAuto(activePlugin, file);
-      if (!uploadRes.asyncUsed && uploadRes.dataset_id) {
-        const remote = await listDatasets(activePlugin);
-        setDatasetListForPlugin(activePlugin, remote);
-        setActiveDatasetId(uploadRes.dataset_id);
+      if (!uploadRes.asyncUsed && uploadRes.dataset) {
+        // ensure the new dataset is in the local list immediately, then activate it
+        upsertDatasetForPlugin(activePlugin, uploadRes.dataset);
+        setActiveDataset(uploadRes.dataset);
         setStatus("Sample data uploaded.");
+        // refresh list in background so we pick up any server-side metadata
+        listDatasets(activePlugin).then((remote) => setDatasetListForPlugin(activePlugin, remote)).catch(() => {});
       } else {
         setStatus("Sample upload queued.");
       }
@@ -210,8 +214,11 @@ export const Dashboard: React.FC<Props> = ({ onOpenDatasetPicker }) => {
       <UploadModal
         open={showUploadModal}
         onClose={() => setShowUploadModal(false)}
-        onUpload={handleFileChange}
-        uploading={uploading}
+        onSuccess={(meta) => {
+          upsertDatasetForPlugin(activePlugin, meta);
+          setActiveDataset(meta);
+          setStatus(`Uploaded ${meta.filename || meta.dataset_id}`);
+        }}
       />
 
       <Card title="Demo flow">

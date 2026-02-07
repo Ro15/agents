@@ -6,6 +6,8 @@ type AppStateShape = {
   setActivePlugin: (p: string) => void;
   activeDatasetId: string | null;
   setActiveDatasetId: (id: string | null) => void;
+  activeDataset: DatasetMeta | null;
+  setActiveDataset: (meta: DatasetMeta) => void;
   datasetListsByPlugin: Record<string, DatasetMeta[]>;
   setDatasetListForPlugin: (plugin: string, list: DatasetMeta[]) => void;
   upsertDatasetForPlugin: (plugin: string, meta: DatasetMeta) => void;
@@ -14,7 +16,6 @@ type AppStateShape = {
 
 const AppStateContext = createContext<AppStateShape | undefined>(undefined);
 
-const STORAGE_KEY = "plugin-dataset-map";
 const PLUGIN_KEY = "active-plugin";
 const DATASET_LIST_KEY = "dataset-lists-by-plugin";
 const ACTIVE_DATASET_KEY = "active-dataset-by-plugin";
@@ -100,11 +101,23 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const activeDataset =
     (datasetListsByPlugin[activePlugin] || []).find((d) => d.dataset_id === activeDatasetId) || null;
 
+  const setActiveDataset = useCallback(
+    (meta: DatasetMeta) => {
+      setActiveDatasetIdByPlugin((prev) => {
+        const next = { ...prev, [activePlugin]: meta.dataset_id };
+        localStorage.setItem(ACTIVE_DATASET_KEY, JSON.stringify(next));
+        return next;
+      });
+    },
+    [activePlugin]
+  );
+
   const value = useMemo(
     () => ({
       activePlugin,
       setActivePlugin,
       activeDataset,
+      setActiveDataset,
       activeDatasetId,
       setActiveDatasetId: (id: string | null) =>
         setActiveDatasetIdByPlugin((prev) => {
@@ -117,7 +130,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       upsertDatasetForPlugin,
       deleteDatasetForPlugin,
     }),
-    [activePlugin, activeDataset, activeDatasetId, datasetListsByPlugin]
+    [activePlugin, activeDataset, activeDatasetId, datasetListsByPlugin, setActiveDataset]
   );
 
   useEffect(() => {

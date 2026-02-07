@@ -7,7 +7,7 @@ import { DataTable } from "../components/DataTable";
 import { TrustPanel } from "../components/TrustPanel";
 import { EmptyState } from "../components/EmptyState";
 import { UploadModal } from "../components/UploadModal";
-import { chat, getPluginQuestions, uploadSalesCSV } from "../lib/api";
+import { chat, getPluginQuestions } from "../lib/api";
 import type { ChatResponse } from "../types";
 import { useToast } from "../components/Toast";
 import { useLocalChats } from "../hooks/useLocalChats";
@@ -22,7 +22,6 @@ export const ChatPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const { messages, setMessages } = useLocalChats(activePlugin, activeDataset?.dataset_id || null);
-  const [uploading, setUploading] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [autoSend, setAutoSend] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
@@ -85,24 +84,12 @@ export const ChatPage: React.FC = () => {
     }
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const meta = await uploadSalesCSV(activePlugin, file);
-      upsertDatasetForPlugin(activePlugin, meta);
-      setMessages([]); // reset history for new dataset
-      push("Upload complete", "success");
-      setShowUpload(false);
-      setInput("");
-      if (meta) setActiveDataset(meta);
-    } catch (err: any) {
-      push(err?.message || "Upload failed", "error");
-    } finally {
-      setUploading(false);
-      e.target.value = "";
-    }
+  const handleUploadSuccess = (meta: import("../types").DatasetMeta) => {
+    upsertDatasetForPlugin(activePlugin, meta);
+    setActiveDataset(meta);
+    setMessages([]); // reset chat history for the new dataset
+    setInput("");
+    setShowUpload(false);
   };
 
   const renderAnswer = (resp: ChatResponse) => {
@@ -270,7 +257,7 @@ export const ChatPage: React.FC = () => {
         )}
       </div>
 
-      <UploadModal open={showUpload} onClose={() => setShowUpload(false)} onUpload={handleUpload} uploading={uploading} />
+      <UploadModal open={showUpload} onClose={() => setShowUpload(false)} onSuccess={handleUploadSuccess} />
     </div>
   );
 };

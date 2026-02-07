@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppState } from "../state";
 import { Button } from "../components/Button";
-import { runInsights, getLatestInsights } from "../lib/api";
+import { runInsightsSync, getLatestInsights } from "../lib/api";
 import type { Insight } from "../types";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { Collapsible } from "../components/Collapsible";
@@ -47,7 +47,7 @@ export const InsightsPage: React.FC = () => {
     if (!datasetId) return;
     setRunning(true);
     try {
-      const data = await runInsights(activePlugin, datasetId, 20, windowKey);
+      const data = await runInsightsSync(activePlugin, datasetId, 20);
       const withWindow = data.map((insight) => ({
         ...insight,
         data_window: insight.data_window || windowLabel || insight.data_window,

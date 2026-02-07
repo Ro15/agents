@@ -43,7 +43,7 @@ function App() {
 }
 
 const DatasetPickerController: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
-  const { activePlugin, activeDataset, datasetListsByPlugin, setActiveDataset } = useAppState();
+  const { activePlugin, activeDataset, datasetListsByPlugin, setActiveDataset, setActiveDatasetId } = useAppState();
   const list = datasetListsByPlugin[activePlugin] || [];
 
   return (
@@ -54,7 +54,11 @@ const DatasetPickerController: React.FC<{ open: boolean; onClose: () => void }> 
       datasets={list}
       activeDatasetId={activeDataset?.dataset_id}
       onSelect={(meta) => {
-        setActiveDataset(meta);
+        if (meta) {
+          setActiveDataset(meta);
+        } else {
+          setActiveDatasetId(null);
+        }
         onClose();
       }}
     />

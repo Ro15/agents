@@ -28,7 +28,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // Plugins
-export const getPlugins = () => request<PluginMeta[]>("/plugins");
+export const getPlugins = async (): Promise<PluginMeta[]> => {
+  const data = await request<{ plugins: PluginMeta[]; active_plugin?: string }>("/plugins");
+  return data.plugins ?? [];
+};
 export const getPlugin = (pluginId: string) => request<any>(`/plugins/${pluginId}`);
 export const getPluginQuestions = (pluginId: string) => request<QuestionPack[]>(`/plugins/${pluginId}/questions`);
 export const getPluginViews = async (pluginId: string) => {
@@ -78,7 +81,7 @@ export async function uploadSalesAuto(plugin: string, file: File, datasetName?: 
 }
 
 // Chat
-export const chat = (plugin: string, dataset_id: string, message: string) =>
+export const chat = (plugin: string, dataset_id: string | null, message: string) =>
   request<ChatResponse>("/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

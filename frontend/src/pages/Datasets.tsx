@@ -23,7 +23,7 @@ export const DatasetsPage: React.FC<Props> = ({ onOpenDatasetPicker }) => {
   const {
     activePlugin,
     setActivePlugin,
-    setDatasetForPlugin,
+    setActiveDataset,
     datasetListsByPlugin,
     setDatasetListForPlugin,
     deleteDatasetForPlugin,
@@ -68,7 +68,7 @@ export const DatasetsPage: React.FC<Props> = ({ onOpenDatasetPicker }) => {
     const meta = list.find((d) => d.dataset_id === datasetId);
     if (!meta) return;
     setActivePlugin(plugin);
-    setDatasetForPlugin(plugin, meta);
+    setActiveDataset(meta);
   };
 
   const handleDelete = (plugin: string, datasetId: string) => {

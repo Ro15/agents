@@ -3,16 +3,19 @@ import { Button } from "./Button";
 import { Select } from "./Select";
 import { useToast } from "./Toast";
 import { useAppState } from "../state";
-import { uploadSalesAuto, getJob, listDatasets } from "../lib/api";
+import { uploadSalesAuto, uploadSalesSync, getJob, listDatasets } from "../lib/api";
+import type { DatasetMeta } from "../types";
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** Called after a successful upload with the new dataset metadata */
+  onSuccess?: (meta: DatasetMeta) => void;
 }
 
 type UploadMode = "auto" | "sync";
 
-export const UploadModal: React.FC<Props> = ({ open, onClose }) => {
+export const UploadModal: React.FC<Props> = ({ open, onClose, onSuccess }) => {
   const { activePlugin, setActivePlugin, setDatasetListForPlugin, setActiveDatasetId } = useAppState();
   const { push } = useToast();
   const [file, setFile] = useState<File | null>(null);
@@ -46,6 +49,8 @@ export const UploadModal: React.FC<Props> = ({ open, onClose }) => {
           const list = await listDatasets(activePlugin);
           setDatasetListForPlugin(activePlugin, list);
           setActiveDatasetId(dsId);
+          const meta = list.find((d) => d.dataset_id === dsId);
+          if (meta) onSuccess?.(meta);
           push("Upload completed", "success");
           clearInterval(timer);
         } else if (job.status === "FAILED") {
@@ -61,7 +66,7 @@ export const UploadModal: React.FC<Props> = ({ open, onClose }) => {
       }
     }, 1500);
     return () => clearInterval(timer);
-  }, [jobId, activePlugin, setDatasetListForPlugin, setActiveDatasetId, push]);
+  }, [jobId, activePlugin, setDatasetListForPlugin, setActiveDatasetId, push, onSuccess]);
 
   const canSubmit = useMemo(() => !!file && !!activePlugin && !uploading, [file, activePlugin, uploading]);
 
@@ -70,17 +75,28 @@ export const UploadModal: React.FC<Props> = ({ open, onClose }) => {
     setUploading(true);
     setFailure(null);
     try {
-      const res = await uploadSalesAuto(activePlugin, file, datasetName || undefined);
-      if (res.asyncUsed && res.job_id) {
-        setJobId(res.job_id);
-        setJobStatus("QUEUED");
-        push("Upload queued (async)", "info");
-      } else if (res.dataset) {
+      if (mode === "sync") {
+        const meta = await uploadSalesSync(activePlugin, file, datasetName || undefined);
         const list = await listDatasets(activePlugin);
         setDatasetListForPlugin(activePlugin, list);
-        setActiveDatasetId(res.dataset.dataset_id);
+        setActiveDatasetId(meta.dataset_id);
         push("Upload complete (sync)", "success");
+        onSuccess?.(meta);
         onClose();
+      } else {
+        const res = await uploadSalesAuto(activePlugin, file, datasetName || undefined);
+        if (res.asyncUsed && res.job_id) {
+          setJobId(res.job_id);
+          setJobStatus("QUEUED");
+          push("Upload queued (async)", "info");
+        } else if (res.dataset) {
+          const list = await listDatasets(activePlugin);
+          setDatasetListForPlugin(activePlugin, list);
+          setActiveDatasetId(res.dataset.dataset_id);
+          push("Upload complete (sync)", "success");
+          onSuccess?.(res.dataset);
+          onClose();
+        }
       }
     } catch (err: any) {
       setFailure(err?.message || "Upload failed");

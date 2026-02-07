@@ -389,11 +389,13 @@ def dataset_to_meta(ds: Dataset) -> dict:
     return {
         "dataset_id": str(ds.dataset_id),
         "plugin_id": ds.plugin_id,
+        "plugin": ds.plugin_id,  # alias for frontend compatibility
         "dataset_name": ds.dataset_name,
         "created_at": ds.created_at.isoformat() if ds.created_at else None,
         "last_ingested_at": ds.last_ingested_at.isoformat() if ds.last_ingested_at else None,
         "row_count": ds.row_count,
         "source_filename": ds.source_filename,
+        "filename": ds.source_filename,  # alias for frontend compatibility
         "is_deleted": ds.is_deleted,
         "version": ds.version,
     }
@@ -499,7 +501,7 @@ def latest_insights(
 async def upload_sales_data(
     file: UploadFile = File(...),
     dataset_id: Optional[str] = Query(None),
-    plugin: Optional[str] = Header(None, convert_underscores=False),
+    x_plugin: Optional[str] = Header(None),
     mode: str = Query("sync"),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
@@ -508,7 +510,7 @@ async def upload_sales_data(
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
 
     try:
-        active_plugin = ensure_active_plugin(plugin)
+        active_plugin = ensure_active_plugin(x_plugin)
         plugin_id = active_plugin.plugin_name
 
         try:
@@ -564,7 +566,7 @@ async def upload_sales_data(
         dataset_obj.source_filename = file.filename
         dataset_obj.is_deleted = False
         dataset_obj.version = (dataset_obj.version or 1) + 1
-        db.merge(dataset_obj)
+        dataset_obj = db.merge(dataset_obj)
         
         ingestion_record = IngestionRun(
             dataset_name="sales",
@@ -577,13 +579,13 @@ async def upload_sales_data(
         db.commit()
         db.refresh(ingestion_record)
 
-        return {
-            "message": f"Successfully uploaded and ingested {len(df)} rows from {file.filename}.",
-            "dataset_id": str(dataset_obj.dataset_id),
-            "row_count": ingestion_record.row_count,
-            "ingested_at": ingestion_record.ingested_at.isoformat() if ingestion_record.ingested_at else None,
-            "plugin": plugin_id
-        }
+        db.refresh(dataset_obj)
+        meta = dataset_to_meta(dataset_obj)
+        meta["message"] = f"Successfully uploaded and ingested {len(df)} rows from {file.filename}."
+        meta["ingested_at"] = ingestion_record.ingested_at.isoformat() if ingestion_record.ingested_at else None
+        return meta
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error processing file {file.filename}: {e}")
@@ -857,6 +859,8 @@ def chat(chat_query: ChatQuery, db: Session = Depends(get_db)):
             },
         }
 
+    except HTTPException:
+        raise
     except ValueError as e:
         record_audit_log(
             db,
