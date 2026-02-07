@@ -1,0 +1,82 @@
+insights:
+  week_over_week_sales_change:
+    title: "Week-over-Week Sales Change"
+    description: "Total revenue vs prior week"
+    required_metrics: ["total_revenue"]
+    severity: "info"
+    data_window: "this week vs last week"
+    explanation_template: "Revenue this week ({this_week_revenue}) vs last week ({last_week_revenue}) -> {change_percent}%"
+    sql_queries:
+      this_week:
+        query: |
+          SELECT SUM(total_amount) as this_week_revenue
+          FROM {table}
+          WHERE DATE(transaction_date) >= {current_date} - INTERVAL '7 days'
+      last_week:
+        query: |
+          SELECT SUM(total_amount) as last_week_revenue
+          FROM {table}
+          WHERE DATE(transaction_date) >= {current_date} - INTERVAL '14 days'
+            AND DATE(transaction_date) < {current_date} - INTERVAL '7 days'
+    trigger_condition:
+      type: "comparison"
+      current_query_id: "this_week"
+      previous_query_id: "last_week"
+      metric_path: "this_week_revenue"
+      previous_metric_path: "last_week_revenue"
+      operator: "!="
+      threshold_percent: 0
+
+  top_items_revenue:
+    title: "Top 5 Items Driving Revenue"
+    description: "Items contributing most revenue this week"
+    required_metrics: ["top_items"]
+    severity: "info"
+    data_window: "last 7 days"
+    explanation_template: "Top seller {item_name} drove {item_revenue} revenue; top 5 listed in details."
+    sql_queries:
+      top_items:
+        query: |
+          SELECT 
+            item_name,
+            SUM(total_amount) as item_revenue,
+            SUM(quantity) as units_sold
+          FROM {table}
+          WHERE DATE(transaction_date) >= {7_days_ago}
+          GROUP BY item_name
+          ORDER BY item_revenue DESC
+          LIMIT 5
+    trigger_condition:
+      type: "threshold"
+      query_id: "top_items"
+      metric_path: "item_revenue"
+      operator: ">"
+      threshold: 0
+
+  dead_stock_candidates:
+    title: "Dead Stock Candidates"
+    description: "Items with inventory on hand but low sales"
+    required_metrics: ["inventory_turnover"]
+    required_columns: ["inventory_on_hand"]
+    severity: "warning"
+    data_window: "last 30 days"
+    explanation_template: "Low sellers with inventory on hand identified; see details."
+    sql_queries:
+      dead_stock:
+        query: |
+          SELECT 
+            item_name,
+            SUM(quantity) as units_sold,
+            MAX(inventory_on_hand) as inventory_on_hand
+          FROM {table}
+          WHERE DATE(transaction_date) >= {current_date} - INTERVAL '30 days'
+          GROUP BY item_name
+          HAVING SUM(quantity) < 10 AND MAX(inventory_on_hand) > 50
+          ORDER BY inventory_on_hand DESC
+          LIMIT 5
+    trigger_condition:
+      type: "threshold"
+      query_id: "dead_stock"
+      metric_path: "inventory_on_hand"
+      operator: ">"
+      threshold: 0

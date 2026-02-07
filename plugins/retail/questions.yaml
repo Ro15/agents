@@ -1,0 +1,68 @@
+question_packs:
+  sku_analysis:
+    description: "Questions about individual SKU performance"
+    patterns:
+      - pattern: "top.*sku|best.*selling.*product|top.*product"
+        required_metrics: ["top_skus_by_revenue"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "sku.*performance|product.*sales"
+        required_metrics: ["top_skus_by_revenue"]
+        constraints:
+          min_confidence: "high"
+  
+  revenue_analysis:
+    description: "Questions about revenue and sales performance"
+    patterns:
+      - pattern: "total.*revenue|total.*sales|earnings"
+        required_metrics: ["total_revenue"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "average.*transaction|transaction.*value"
+        required_metrics: ["average_transaction_value"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "revenue.*trend|sales.*trend|daily.*revenue"
+        required_metrics: ["daily_revenue_trend"]
+        constraints:
+          min_confidence: "high"
+  
+  category_analysis:
+    description: "Questions about product categories"
+    patterns:
+      - pattern: "category|categories|by.*category"
+        required_metrics: ["revenue_by_category"]
+        constraints:
+          min_confidence: "high"
+  
+  regional_analysis:
+    description: "Questions about geographic performance"
+    patterns:
+      - pattern: "region|store|location|by.*region|by.*store"
+        required_metrics: ["revenue_by_region"]
+        constraints:
+          min_confidence: "high"
+  
+  discount_analysis:
+    description: "Questions about discount impact"
+    patterns:
+      - pattern: "discount|promotion|discount.*impact"
+        required_metrics: ["discount_impact"]
+        constraints:
+          min_confidence: "medium"
+  
+  volume_analysis:
+    description: "Questions about transaction and unit volumes"
+    patterns:
+      - pattern: "how many.*units|units.*sold|quantity"
+        required_metrics: ["units_sold"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "number.*transaction|transaction.*count"
+        required_metrics: ["transaction_count"]
+        constraints:
+          min_confidence: "high"

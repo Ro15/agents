@@ -1,0 +1,44 @@
+question_packs:
+  sales_analysis:
+    description: "Questions about sales performance and trends"
+    patterns:
+      - pattern: "total sales|revenue|earnings"
+        required_metrics: ["total_sales"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "top.*items|best.*selling"
+        required_metrics: ["top_items_by_revenue"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "sales.*trend|daily.*sales|sales.*over"
+        required_metrics: ["daily_sales_trend"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "average.*order|order.*value"
+        required_metrics: ["average_order_value"]
+        constraints:
+          min_confidence: "high"
+  
+  category_analysis:
+    description: "Questions about product categories"
+    patterns:
+      - pattern: "category|categories|by.*category"
+        required_metrics: ["sales_by_category"]
+        constraints:
+          min_confidence: "high"
+  
+  volume_analysis:
+    description: "Questions about order and item volumes"
+    patterns:
+      - pattern: "how many.*items|items.*sold|quantity"
+        required_metrics: ["items_sold"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "number.*orders|order.*count|orders.*placed"
+        required_metrics: ["order_count"]
+        constraints:
+          min_confidence: "high"

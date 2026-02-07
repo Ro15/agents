@@ -1,0 +1,63 @@
+question_packs:
+  production_volume:
+    description: "Questions about production volume and output"
+    patterns:
+      - pattern: "total.*produced|units.*produced|production.*volume"
+        required_metrics: ["total_units_produced"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "production.*trend|daily.*production"
+        required_metrics: ["daily_production_trend"]
+        constraints:
+          min_confidence: "high"
+  
+  quality_analysis:
+    description: "Questions about product quality and defects"
+    patterns:
+      - pattern: "defect|defective|quality|scrap"
+        required_metrics: ["total_defective_units", "defect_rate"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "defect.*rate|quality.*rate"
+        required_metrics: ["defect_rate"]
+        constraints:
+          min_confidence: "high"
+      
+      - pattern: "scrap|waste|scrap.*weight"
+        required_metrics: ["total_scrap_weight"]
+        constraints:
+          min_confidence: "high"
+  
+  product_analysis:
+    description: "Questions about production by product"
+    patterns:
+      - pattern: "product|by.*product"
+        required_metrics: ["production_by_product"]
+        constraints:
+          min_confidence: "high"
+  
+  line_analysis:
+    description: "Questions about production line performance"
+    patterns:
+      - pattern: "line|production.*line|by.*line"
+        required_metrics: ["production_by_line"]
+        constraints:
+          min_confidence: "high"
+  
+  shift_analysis:
+    description: "Questions about shift performance"
+    patterns:
+      - pattern: "shift|day.*shift|night.*shift|by.*shift"
+        required_metrics: ["production_by_shift"]
+        constraints:
+          min_confidence: "high"
+  
+  cost_analysis:
+    description: "Questions about production costs"
+    patterns:
+      - pattern: "cost|expense|material.*cost|labor.*cost"
+        required_metrics: ["total_production_cost"]
+        constraints:
+          min_confidence: "medium"

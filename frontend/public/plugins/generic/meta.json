@@ -1,0 +1,8 @@
+{
+  "id": "generic",
+  "name": "Generic",
+  "description": "Upload any tidy table with a date column to explore trends and anomalies quickly.",
+  "domains": ["sales", "inventory", "ops"],
+  "required_columns": ["date", "entity", "metric_1", "metric_2", "metric_3"],
+  "sample_csv_url": "/sample_data/generic_sample.csv"
+}

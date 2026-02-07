@@ -1,0 +1,44 @@
+[
+  {
+    "id": "throughput",
+    "title": "Throughput pack",
+    "questions": [
+      "What is the units produced by line for the last 7 days?",
+      "Which shifts are below target throughput this week?",
+      "Show OEE trend by line vs previous week.",
+      "Where did downtime exceed 60 minutes yesterday?",
+      "Which products have the highest cycle time variance?",
+      "Show hourly throughput vs plan for today.",
+      "Which line improved the most week over week?",
+      "Highlight lines with missing production data today."
+    ]
+  },
+  {
+    "id": "quality",
+    "title": "Quality pack",
+    "questions": [
+      "What is the defect rate by product over the last 14 days?",
+      "Which lines have rising scrap units week over week?",
+      "Show FPY (first pass yield) by shift for yesterday.",
+      "Which products exceed the defect threshold this week?",
+      "How many QA failures occurred by cause code yesterday?",
+      "Which line has the best yield trend this month?",
+      "Identify anomalies in defect rate over the last 30 days.",
+      "Which suppliers correlate with higher defect rates?"
+    ]
+  },
+  {
+    "id": "ops",
+    "title": "Ops pack",
+    "questions": [
+      "Which lines had the most downtime this week?",
+      "Show MTTR and MTBF by line for the last 30 days.",
+      "What is the top cause of stoppages this month?",
+      "Which shifts ran overtime yesterday?",
+      "Where are labor hours above plan this week?",
+      "Which lines failed to meet takt time yesterday?",
+      "Show energy consumption by line over the last 7 days.",
+      "Which work orders are still open past due date?"
+    ]
+  }
+]

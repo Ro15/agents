@@ -1,0 +1,22 @@
+allowed_question_types:
+  - "aggregation"
+  - "trend"
+  - "comparison"
+  - "ranking"
+
+forbidden_topics:
+  - "pii"
+  - "personal_data"
+  - "customer_names"
+  - "employee_data"
+
+max_date_range_days: null
+
+enable_forecasting: false
+
+enable_predictions: false
+
+confidence_rules:
+  high: "Exact aggregation with clear filters"
+  medium: "Aggregation with assumptions"
+  low: "Partial data or inferred logic"

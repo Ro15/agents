@@ -1,0 +1,18 @@
+[
+  {
+    "id": "starter",
+    "title": "Starter pack",
+    "questions": [
+      "What are the top 10 records by metric_1 this week?",
+      "Show daily trend of metric_1 vs metric_2 over the last 30 days.",
+      "Which entities have the largest week-over-week change in metric_1?",
+      "Highlight anomalies in metric_2 for the last 14 days.",
+      "What is the correlation between metric_1 and metric_3?",
+      "Show rolling 7-day average of metric_1 by entity.",
+      "Which entities are missing data in the last 7 days?",
+      "Rank entities by metric_3 for the latest date.",
+      "Show variance of metric_2 vs prior period by entity.",
+      "Which entities contribute 80% of total metric_1 this month?"
+    ]
+  }
+]

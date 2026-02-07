@@ -1,0 +1,57 @@
+tables:
+  sales_transactions:
+    description: "Retail sales transaction records"
+    primary_time_column: "transaction_date"
+    columns:
+      transaction_id:
+        type: "string"
+        meaning: "Unique identifier for each transaction"
+        nullable: false
+      transaction_date:
+        type: "timestamp"
+        meaning: "Date and time of the transaction"
+        nullable: false
+      sku:
+        type: "string"
+        meaning: "Stock Keeping Unit - unique product identifier"
+        nullable: false
+      product_name:
+        type: "string"
+        meaning: "Name of the product sold"
+        nullable: false
+      category:
+        type: "string"
+        meaning: "Product category (e.g., electronics, clothing, home)"
+        nullable: true
+      subcategory:
+        type: "string"
+        meaning: "Product subcategory for finer classification"
+        nullable: true
+      quantity:
+        type: "numeric"
+        meaning: "Number of units sold"
+        nullable: false
+      unit_price:
+        type: "numeric"
+        meaning: "Price per unit"
+        nullable: false
+      total_amount:
+        type: "numeric"
+        meaning: "Total transaction amount (quantity * unit_price - discount)"
+        nullable: false
+      discount_percent:
+        type: "numeric"
+        meaning: "Discount percentage applied"
+        nullable: true
+      store_id:
+        type: "string"
+        meaning: "Identifier for the store location"
+        nullable: true
+      region:
+        type: "string"
+        meaning: "Geographic region of the store"
+        nullable: true
+      payment_method:
+        type: "string"
+        meaning: "Payment method used (cash, card, online)"
+        nullable: true

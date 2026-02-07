@@ -1,0 +1,10 @@
+metrics:
+  daily_sales:
+    description: "Daily net sales and order count"
+    sql_template: "SELECT DATE(order_datetime) as day, SUM(total_line_amount) as net_sales, COUNT(DISTINCT order_id) as orders FROM {table} GROUP BY DATE(order_datetime)"
+  item_sales:
+    description: "Item sales by revenue"
+    sql_template: "SELECT item_name, SUM(total_line_amount) as revenue, SUM(quantity) as units FROM {table} GROUP BY item_name ORDER BY revenue DESC"
+  category_sales:
+    description: "Category sales breakdown"
+    sql_template: "SELECT category, SUM(total_line_amount) as revenue, COUNT(*) as lines FROM {table} GROUP BY category ORDER BY revenue DESC"

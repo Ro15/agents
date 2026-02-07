@@ -1,0 +1,45 @@
+tables:
+  sales_transactions:
+    description: "Restaurant sales transaction records"
+    primary_time_column: "order_datetime"
+    columns:
+      order_id:
+        type: "string"
+        meaning: "Unique identifier for each order"
+        nullable: false
+      order_datetime:
+        type: "timestamp"
+        meaning: "Date and time when the order was placed"
+        nullable: false
+      item_name:
+        type: "string"
+        meaning: "Name of the item sold"
+        nullable: false
+      category:
+        type: "string"
+        meaning: "Product category (e.g., appetizers, mains, desserts)"
+        nullable: true
+      quantity:
+        type: "numeric"
+        meaning: "Number of items sold"
+        nullable: false
+      item_price:
+        type: "numeric"
+        meaning: "Price per item"
+        nullable: false
+      total_line_amount:
+        type: "numeric"
+        meaning: "Total amount for this line item (quantity * item_price - discount)"
+        nullable: false
+      payment_type:
+        type: "string"
+        meaning: "Method of payment (cash, card, etc.)"
+        nullable: true
+      discount_amount:
+        type: "numeric"
+        meaning: "Discount applied to this line item"
+        nullable: true
+      tax_amount:
+        type: "numeric"
+        meaning: "Tax amount for this line item"
+        nullable: true

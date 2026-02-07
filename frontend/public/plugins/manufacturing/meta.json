@@ -1,0 +1,8 @@
+{
+  "id": "manufacturing",
+  "name": "Manufacturing",
+  "description": "Monitor throughput, downtime, quality, and yield by plant and line.",
+  "domains": ["quality", "throughput", "ops"],
+  "required_columns": ["date", "line_id", "product", "units_produced", "scrap_units", "downtime_minutes", "shift", "defect_rate"],
+  "sample_csv_url": "/sample_data/manufacturing_sample.csv"
+}

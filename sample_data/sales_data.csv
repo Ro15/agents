@@ -1,0 +1,13 @@
+order_id,order_datetime,item_name,category,quantity,item_price,total_line_amount,payment_type,discount_amount,tax_amount
+1,2023-10-26 10:00:00,Coffee,Beverages,2,3.50,7.00,card,0,0.50
+2,2023-10-26 10:05:00,Croissant,Pastries,1,2.50,2.50,cash,0,0.20
+1,2023-10-26 10:00:00,Sandwich,Food,1,8.00,8.00,card,0,0.75
+3,2023-10-27 11:00:00,Tea,Beverages,1,3.00,3.00,card,0,0.25
+3,2023-10-27 11:00:00,Muffin,Pastries,2,2.75,5.50,card,0,0.45
+4,2023-10-27 12:30:00,Salad,Food,1,9.50,9.50,cash,0,0.85
+5,2023-10-28 13:00:00,Coffee,Beverages,1,3.50,3.50,card,0,0.30
+6,2023-10-28 14:15:00,Latte,Beverages,1,4.50,4.50,card,0.50,0.40
+7,2023-10-29 09:00:00,Bagel,Pastries,1,3.00,3.00,cash,0,0.25
+8,2023-10-30 09:30:00,Espresso,Beverages,1,3.00,3.00,card,0,0.25
+9,2023-10-31 18:00:00,Pizza,Food,1,12.00,12.00,card,1.00,1.00
+10,2023-11-01 19:00:00,Burger,Food,1,10.00,10.00,cash,0,0.90

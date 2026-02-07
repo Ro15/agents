@@ -1,0 +1,10 @@
+metrics:
+  daily_output:
+    description: "Daily units produced"
+    sql_template: "SELECT DATE(run_date) as day, SUM(units_produced) as units FROM {table} GROUP BY DATE(run_date)"
+  scrap_rate_daily:
+    description: "Daily scrap rate"
+    sql_template: "SELECT DATE(run_date) as day, SUM(units_defective) as defective, SUM(units_produced) as produced, ROUND(100.0 * SUM(units_defective)/NULLIF(SUM(units_produced),0),2) as scrap_rate FROM {table} GROUP BY DATE(run_date)"
+  top_defect_contributors:
+    description: "Lines with most defects"
+    sql_template: "SELECT line_id, SUM(units_defective) as defective FROM {table} GROUP BY line_id ORDER BY defective DESC"

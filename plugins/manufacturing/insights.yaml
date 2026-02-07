@@ -1,0 +1,83 @@
+insights:
+  scrap_rate_wow:
+    title: "Scrap Rate Increased WoW"
+    description: "Scrap weight as % of output vs prior week"
+    required_metrics: ["scrap_rate"]
+    severity: "critical"
+    data_window: "this week vs last week"
+    explanation_template: "Scrap rate this week ({this_week_rate}%) vs last week ({last_week_rate}%) -> {change_percent}%"
+    sql_queries:
+      this_week:
+        query: |
+          SELECT ROUND(100.0 * SUM(scrap_weight_kg) / NULLIF(SUM(units_produced),0), 2) as this_week_rate
+          FROM {production_table}
+          WHERE DATE(run_date) >= {current_date} - INTERVAL '7 days'
+      last_week:
+        query: |
+          SELECT ROUND(100.0 * SUM(scrap_weight_kg) / NULLIF(SUM(units_produced),0), 2) as last_week_rate
+          FROM {production_table}
+          WHERE DATE(run_date) >= {current_date} - INTERVAL '14 days'
+            AND DATE(run_date) < {current_date} - INTERVAL '7 days'
+    trigger_condition:
+      type: "comparison"
+      current_query_id: "this_week"
+      previous_query_id: "last_week"
+      metric_path: "this_week_rate"
+      previous_metric_path: "last_week_rate"
+      operator: ">"
+      threshold_percent: 10
+
+  top_defect_contributor:
+    title: "Top Defect Contributor"
+    description: "Product with highest defect volume this week"
+    required_metrics: ["defect_volume"]
+    severity: "warning"
+    data_window: "last 7 days"
+    explanation_template: "Product {product_name} drove {defect_units} defects ({defect_rate}% rate) in last 7 days."
+    sql_queries:
+      defect_by_product:
+        query: |
+          SELECT 
+            product_name,
+            SUM(units_defective) as defect_units,
+            SUM(units_produced) as units_produced,
+            ROUND(100.0 * SUM(units_defective) / NULLIF(SUM(units_produced),0), 2) as defect_rate
+          FROM {production_table}
+          WHERE DATE(run_date) >= {7_days_ago}
+          GROUP BY product_name
+          ORDER BY defect_units DESC
+          LIMIT 1
+    trigger_condition:
+      type: "threshold"
+      query_id: "defect_by_product"
+      metric_path: "defect_units"
+      operator: ">"
+      threshold: 0
+
+  downtime_spike:
+    title: "Downtime Spike"
+    description: "Average downtime per run higher than baseline"
+    required_metrics: ["downtime"]
+    required_columns: ["downtime_minutes"]
+    severity: "warning"
+    data_window: "today vs 7-day average"
+    explanation_template: "Avg downtime today {today_downtime} mins vs baseline {baseline_downtime} mins ({change_percent}%)."
+    sql_queries:
+      today:
+        query: |
+          SELECT AVG(downtime_minutes) as today_downtime
+          FROM {production_table}
+          WHERE DATE(run_date) = {current_date}
+      baseline:
+        query: |
+          SELECT AVG(downtime_minutes) as baseline_downtime
+          FROM {production_table}
+          WHERE DATE(run_date) BETWEEN {7_days_ago} AND {yesterday}
+    trigger_condition:
+      type: "comparison"
+      current_query_id: "today"
+      previous_query_id: "baseline"
+      metric_path: "today_downtime"
+      previous_metric_path: "baseline_downtime"
+      operator: ">"
+      threshold_percent: 20

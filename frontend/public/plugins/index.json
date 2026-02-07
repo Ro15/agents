@@ -1,0 +1,26 @@
+[
+  {
+    "id": "retail",
+    "name": "Retail",
+    "description": "Track store and SKU performance, promotions, and inventory health across regions.",
+    "domains": ["sales", "inventory", "ops"],
+    "required_columns": ["date", "store_id", "sku", "units_sold", "revenue", "inventory_on_hand", "promo_flag", "region"],
+    "sample_csv_url": "/sample_data/retail_sample.csv"
+  },
+  {
+    "id": "manufacturing",
+    "name": "Manufacturing",
+    "description": "Monitor throughput, quality, downtime, and yield across production lines.",
+    "domains": ["quality", "throughput", "ops"],
+    "required_columns": ["date", "line_id", "product", "units_produced", "scrap_units", "downtime_minutes", "shift", "defect_rate"],
+    "sample_csv_url": "/sample_data/manufacturing_sample.csv"
+  },
+  {
+    "id": "generic",
+    "name": "Generic",
+    "description": "Bring your own tabular data for quick exploratory analysis and anomaly hunting.",
+    "domains": ["sales", "inventory", "ops"],
+    "required_columns": ["date", "entity", "metric_1", "metric_2", "metric_3"],
+    "sample_csv_url": "/sample_data/generic_sample.csv"
+  }
+]

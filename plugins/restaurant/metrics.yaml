@@ -1,0 +1,42 @@
+metrics:
+  total_sales:
+    description: "Total revenue from sales"
+    sql_template: "SELECT DATE(order_datetime) AS sale_date, SUM(total_line_amount) AS total_sales FROM {table} {time_filter} GROUP BY DATE(order_datetime)"
+    output_type: "number"
+    aggregation: "sum"
+  
+  order_count:
+    description: "Number of orders"
+    sql_template: "SELECT COUNT(DISTINCT order_id) FROM {table} {time_filter}"
+    output_type: "number"
+    aggregation: "count"
+  
+  average_order_value:
+    description: "Average value per order"
+    sql_template: "SELECT SUM(total_line_amount) / NULLIF(COUNT(DISTINCT order_id), 0) FROM {table} {time_filter}"
+    output_type: "number"
+    aggregation: "avg"
+  
+  items_sold:
+    description: "Total quantity of items sold"
+    sql_template: "SELECT SUM(quantity) FROM {table} {time_filter}"
+    output_type: "number"
+    aggregation: "sum"
+  
+  top_items_by_revenue:
+    description: "Top selling items by revenue"
+    sql_template: "SELECT item_name, SUM(total_line_amount) as total_revenue FROM {table} {time_filter} GROUP BY item_name ORDER BY total_revenue DESC LIMIT 10"
+    output_type: "table"
+    aggregation: "sum"
+  
+  sales_by_category:
+    description: "Sales breakdown by category"
+    sql_template: "SELECT category, SUM(total_line_amount) as total_sales, COUNT(DISTINCT order_id) as order_count FROM {table} {time_filter} GROUP BY category ORDER BY total_sales DESC"
+    output_type: "table"
+    aggregation: "sum"
+  
+  daily_sales_trend:
+    description: "Daily sales trend over time"
+    sql_template: "SELECT DATE(order_datetime) as date, SUM(total_line_amount) as total_sales FROM {table} {time_filter} GROUP BY DATE(order_datetime) ORDER BY date"
+    output_type: "table"
+    aggregation: "sum"

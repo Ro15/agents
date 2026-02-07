@@ -1,0 +1,5 @@
+date,line_id,product,units_produced,scrap_units,downtime_minutes,shift,defect_rate
+2026-01-20,LN-01,Widget-A,1200,18,35,Day,0.015
+2026-01-20,LN-02,Widget-B,980,22,54,Night,0.022
+2026-01-21,LN-01,Widget-A,1305,15,20,Day,0.011
+2026-01-21,LN-03,Widget-C,760,12,80,Swing,0.016

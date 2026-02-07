@@ -1,0 +1,57 @@
+tables:
+  production_runs:
+    description: "Manufacturing production run records"
+    primary_time_column: "run_date"
+    columns:
+      run_id:
+        type: "string"
+        meaning: "Unique identifier for each production run"
+        nullable: false
+      run_date:
+        type: "timestamp"
+        meaning: "Date and time when the production run started"
+        nullable: false
+      product_id:
+        type: "string"
+        meaning: "Identifier for the product being manufactured"
+        nullable: false
+      product_name:
+        type: "string"
+        meaning: "Name of the product"
+        nullable: false
+      line_id:
+        type: "string"
+        meaning: "Production line identifier"
+        nullable: false
+      units_produced:
+        type: "numeric"
+        meaning: "Number of units produced in this run"
+        nullable: false
+      units_defective:
+        type: "numeric"
+        meaning: "Number of defective units"
+        nullable: true
+      scrap_weight_kg:
+        type: "numeric"
+        meaning: "Weight of scrap material in kilograms"
+        nullable: true
+      production_time_hours:
+        type: "numeric"
+        meaning: "Total production time in hours"
+        nullable: false
+      material_cost:
+        type: "numeric"
+        meaning: "Cost of raw materials used"
+        nullable: true
+      labor_cost:
+        type: "numeric"
+        meaning: "Labor cost for this production run"
+        nullable: true
+      shift:
+        type: "string"
+        meaning: "Production shift (day, night, weekend)"
+        nullable: true
+      facility:
+        type: "string"
+        meaning: "Manufacturing facility identifier"
+        nullable: true

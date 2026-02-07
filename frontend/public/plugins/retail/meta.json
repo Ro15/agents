@@ -1,0 +1,8 @@
+{
+  "id": "retail",
+  "name": "Retail",
+  "description": "Analyze store and SKU performance, promotions, and regional trends.",
+  "domains": ["sales", "inventory", "ops"],
+  "required_columns": ["date", "store_id", "sku", "units_sold", "revenue", "inventory_on_hand", "promo_flag", "region"],
+  "sample_csv_url": "/sample_data/retail_sample.csv"
+}

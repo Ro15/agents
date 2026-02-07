@@ -1,0 +1,22 @@
+allowed_question_types:
+  - "aggregation"
+  - "trend"
+  - "comparison"
+  - "quality_analysis"
+
+forbidden_topics:
+  - "pii"
+  - "personal_data"
+  - "employee_names"
+  - "employee_data"
+
+max_date_range_days: null
+
+enable_forecasting: false
+
+enable_predictions: false
+
+confidence_rules:
+  high: "Exact aggregation with clear filters"
+  medium: "Aggregation with assumptions or cost estimates"
+  low: "Inferred logic or complex calculations"

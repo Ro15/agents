@@ -1,0 +1,5 @@
+date,store_id,sku,units_sold,revenue,inventory_on_hand,promo_flag,region
+2026-01-20,store-001,SKU-100,42,840,120,true,West
+2026-01-20,store-002,SKU-200,30,450,80,false,East
+2026-01-21,store-001,SKU-100,55,1100,90,true,West
+2026-01-21,store-003,SKU-150,18,270,45,false,South

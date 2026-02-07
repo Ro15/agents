@@ -1,0 +1,46 @@
+[
+  {
+    "id": "sales",
+    "title": "Sales pack",
+    "questions": [
+      "What were the top 10 SKUs by revenue last week?",
+      "How did revenue trend week over week by region?",
+      "Which stores missed their daily sales target yesterday?",
+      "Show gross margin by category for the last 14 days.",
+      "Which promotions delivered the highest lift this month?",
+      "What is the 7-day revenue vs previous 7-day window?",
+      "Which SKUs are declining fastest month to date?",
+      "Where did average basket size increase the most this week?",
+      "Highlight stores with negative revenue growth vs last year.",
+      "What were the top 5 categories by units sold yesterday?"
+    ]
+  },
+  {
+    "id": "inventory",
+    "title": "Inventory pack",
+    "questions": [
+      "Which SKUs are below min stock levels right now?",
+      "Show days of supply by store and category.",
+      "Which items are at risk of stockout in the next 7 days?",
+      "Where do we have more than 60 days of supply?",
+      "List SKUs with highest backorder volume this week.",
+      "Which stores need restocking based on last 3 days of sales?",
+      "What is the shrink rate by store over the last month?",
+      "How many stores have zero on-hand inventory for top SKUs?"
+    ]
+  },
+  {
+    "id": "ops",
+    "title": "Ops pack",
+    "questions": [
+      "Which stores have the longest checkout times?",
+      "Show staffing vs traffic correlation by hour for yesterday.",
+      "What is the return rate by SKU and store?",
+      "Identify anomalies in POS transactions in the last 24 hours.",
+      "Which stores have missing sales data this week?",
+      "What is the NPS trend by region?",
+      "Which SKUs drive most customer complaints?",
+      "How many stores did not sync inventory overnight?"
+    ]
+  }
+]
