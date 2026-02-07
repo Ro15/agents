@@ -21,7 +21,7 @@ export const TopNav: React.FC = () => {
             <p className="text-xs text-slate-500">Sector-agnostic data co-pilot</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 overflow-x-auto">
           <NavLink to="/" className={navItemClass}>
             Dashboard
           </NavLink>
@@ -36,6 +36,24 @@ export const TopNav: React.FC = () => {
           </NavLink>
           <NavLink to="/insights" className={navItemClass}>
             Insights
+          </NavLink>
+          <NavLink to="/history" className={navItemClass}>
+            History
+          </NavLink>
+          <NavLink to="/dashboards" className={navItemClass}>
+            Boards
+          </NavLink>
+          <NavLink to="/connectors" className={navItemClass}>
+            Connectors
+          </NavLink>
+          <NavLink to="/schedules" className={navItemClass}>
+            Schedules
+          </NavLink>
+          <NavLink to="/catalog" className={navItemClass}>
+            Catalog
+          </NavLink>
+          <NavLink to="/usage" className={navItemClass}>
+            Usage
           </NavLink>
         </div>
         <div className="hidden sm:block">

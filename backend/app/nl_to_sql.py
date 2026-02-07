@@ -84,6 +84,8 @@ class SQLGenerationResult:
     model_name: Optional[str] = None
     failure_reason: Optional[str] = None
     cache_info: dict = None
+    chart_hint: str = "none"
+    summary: str = ""
 
     def __post_init__(self):
         if self.cache_info is None:
@@ -158,7 +160,7 @@ def get_active_plugin() -> PluginConfig:
 from cache.cache import cache_get, cache_set, stable_hash, normalize_question, LLM_SQL_CACHE_TTL_SECONDS
 
 
-def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plugin_config_hash: str = "", prompt_version: str = "v2") -> SQLGenerationResult:
+def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plugin_config_hash: str = "", prompt_version: str = "v2", conversation_history: list = None) -> SQLGenerationResult:
     """
     Generates SQL from a natural language query using LLM with plugin configuration.
     Implements a two-pass repair loop and validation via SQLGuard.
@@ -230,6 +232,8 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
             model_name=cached.get("model_name"),
             failure_reason=None,
             cache_info=cache_info,
+            chart_hint=cached.get("chart_hint", "none"),
+            summary=cached.get("summary", ""),
         )
 
     attempts = 0
@@ -245,6 +249,7 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
             feedback=last_error,
             timezone="Asia/Kolkata",
             today_iso=today_iso,
+            conversation_history=conversation_history,
         )
         if not response:
             last_error = {"error": "llm_unavailable", "allowed_tables": list(ACTIVE_PLUGIN.get_allowed_tables()), "allowed_columns": list(ACTIVE_PLUGIN.get_allowed_columns())}
@@ -283,6 +288,8 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
         repairs=attempts - 1,
         model_name=response.model_name if response else None,
         failure_reason=None if sql else (last_error.get("error") if last_error else "generation_failed"),
+        chart_hint=response.chart_hint if response else "none",
+        summary=response.summary if response else "",
     )
     if sql:
         cache_set(
@@ -293,6 +300,8 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
                 "answer_type": result.answer_type,
                 "assumptions": result.assumptions,
                 "model_name": result.model_name,
+                "chart_hint": result.chart_hint,
+                "summary": result.summary,
             },
             LLM_SQL_CACHE_TTL_SECONDS,
         )

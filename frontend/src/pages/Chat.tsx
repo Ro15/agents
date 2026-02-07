@@ -4,10 +4,11 @@ import { useAppState } from "../state";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { DataTable } from "../components/DataTable";
+import { SmartChart } from "../components/SmartChart";
 import { TrustPanel } from "../components/TrustPanel";
 import { EmptyState } from "../components/EmptyState";
 import { UploadModal } from "../components/UploadModal";
-import { chat, getPluginQuestions } from "../lib/api";
+import { chat, getPluginQuestions, createConversation, submitFeedback } from "../lib/api";
 import type { ChatResponse } from "../types";
 import { useToast } from "../components/Toast";
 import { useLocalChats } from "../hooks/useLocalChats";
@@ -26,6 +27,12 @@ export const ChatPage: React.FC = () => {
   const [autoSend, setAutoSend] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [showSuggestionsPanel, setShowSuggestionsPanel] = useState(true);
+
+  // Multi-turn conversation state
+  const [conversationId, setConversationId] = useState<string | null>(null);
+
+  // Feedback state: tracks which messages have been rated
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<number, 1 | -1>>({});
 
   const canChat = !!activeDataset;
 
@@ -66,6 +73,19 @@ export const ChatPage: React.FC = () => {
     loadSuggestions();
   }, [activePlugin, fallbackSuggestions]);
 
+  // Build conversation history for multi-turn context
+  const buildConversationHistory = () => {
+    return messages.slice(-10).map((m) => ({
+      role: m.role,
+      content:
+        m.role === "user"
+          ? (m.content as string)
+          : (m.content as ChatResponse).summary ||
+            (m.content as ChatResponse).narrative ||
+            String((m.content as ChatResponse).answer).slice(0, 300),
+    }));
+  };
+
   const sendMessage = async (override?: string) => {
     const text = (override ?? input).trim();
     if (!text || !canChat) return;
@@ -74,7 +94,26 @@ export const ChatPage: React.FC = () => {
     setInput("");
     setLoading(true);
     try {
-      const resp = await chat(activePlugin, activeDataset?.dataset_id || null, userMsg.content);
+      // Auto-create a conversation thread if none exists
+      let threadId = conversationId;
+      if (!threadId) {
+        try {
+          const thread = await createConversation(activePlugin, activeDataset?.dataset_id, text.slice(0, 60));
+          threadId = thread.thread_id;
+          setConversationId(threadId);
+        } catch {
+          // Non-critical; continue without thread
+        }
+      }
+
+      const history = buildConversationHistory();
+      const resp = await chat(activePlugin, activeDataset?.dataset_id || null, userMsg.content, threadId, history);
+
+      // Update conversation_id if returned
+      if (resp.conversation_id && !conversationId) {
+        setConversationId(resp.conversation_id);
+      }
+
       const assistantMsg = { role: "assistant" as const, content: resp, createdAt: new Date().toISOString() };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
@@ -88,18 +127,106 @@ export const ChatPage: React.FC = () => {
     upsertDatasetForPlugin(activePlugin, meta);
     setActiveDataset(meta);
     setMessages([]); // reset chat history for the new dataset
+    setConversationId(null); // reset conversation thread
+    setFeedbackGiven({});
     setInput("");
     setShowUpload(false);
   };
 
-  const renderAnswer = (resp: ChatResponse) => {
+  const handleNewConversation = () => {
+    setMessages([]);
+    setConversationId(null);
+    setFeedbackGiven({});
+    setInput("");
+  };
+
+  // Feedback handler
+  const handleFeedback = async (msgIdx: number, rating: 1 | -1, resp: ChatResponse) => {
+    try {
+      await submitFeedback({
+        plugin_id: activePlugin,
+        question: messages[msgIdx - 1]?.role === "user" ? (messages[msgIdx - 1].content as string) : "",
+        original_sql: resp.sql,
+        rating,
+        query_history_id: resp.history_id,
+      });
+      setFeedbackGiven((prev) => ({ ...prev, [msgIdx]: rating }));
+      push(rating === 1 ? "Thanks for the feedback!" : "Feedback recorded. We'll improve.", "success");
+    } catch {
+      push("Failed to submit feedback", "error");
+    }
+  };
+
+  const [chartView, setChartView] = useState<Record<number, "chart" | "table">>({});
+
+  const renderAnswer = (resp: ChatResponse, msgIdx: number) => {
+    // Number answer -- big stat with context
     if (resp.answer_type === "number") {
-      return <div className="text-4xl font-bold text-slate-900">{resp.answer}</div>;
+      const formatted =
+        typeof resp.answer === "number"
+          ? resp.answer.toLocaleString(undefined, { maximumFractionDigits: 2 })
+          : resp.answer;
+      return (
+        <div className="flex flex-col items-start gap-1">
+          <div className="text-4xl font-bold text-brand-blue">{formatted}</div>
+          {resp.narrative && <p className="text-sm text-slate-700 italic">{resp.narrative}</p>}
+          {!resp.narrative && resp.summary && <p className="text-sm text-slate-600">{resp.summary}</p>}
+          {resp.assumptions && resp.assumptions.length > 0 && (
+            <p className="text-xs text-slate-500 italic">{resp.assumptions.join(". ")}</p>
+          )}
+        </div>
+      );
     }
-    if (resp.answer_type === "table" && Array.isArray(resp.answer)) {
-      return <DataTable rows={resp.answer} />;
+
+    // Table answer -- chart + table toggle
+    if (resp.answer_type === "table" && Array.isArray(resp.answer) && resp.answer.length > 0) {
+      const view = chartView[msgIdx] || "chart";
+      const showChart = view === "chart" && resp.answer.length >= 2 && resp.answer.length <= 500;
+      return (
+        <div className="space-y-3">
+          {resp.narrative && <p className="text-sm text-slate-700 italic">{resp.narrative}</p>}
+          {!resp.narrative && resp.summary && <p className="text-sm text-slate-700">{resp.summary}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                view === "chart"
+                  ? "bg-brand-blue text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+              onClick={() => setChartView((p) => ({ ...p, [msgIdx]: "chart" }))}
+            >
+              Chart
+            </button>
+            <button
+              className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                view === "table"
+                  ? "bg-brand-blue text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+              onClick={() => setChartView((p) => ({ ...p, [msgIdx]: "table" }))}
+            >
+              Table
+            </button>
+            <span className="text-xs text-slate-500">{resp.answer.length} rows</span>
+          </div>
+          {showChart && <SmartChart rows={resp.answer} hint={resp.chart_hint} />}
+          {view === "table" && <DataTable rows={resp.answer} />}
+        </div>
+      );
     }
-    return <p className="text-sm text-slate-800 whitespace-pre-wrap">{resp.answer}</p>;
+
+    // Text / fallback
+    return (
+      <div>
+        <p className="text-sm text-slate-800 whitespace-pre-wrap">{resp.answer}</p>
+        {resp.narrative && resp.narrative !== String(resp.answer) && (
+          <p className="mt-1 text-sm text-slate-700 italic">{resp.narrative}</p>
+        )}
+        {!resp.narrative && resp.summary && resp.summary !== String(resp.answer) && (
+          <p className="mt-1 text-xs text-slate-500">{resp.summary}</p>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -121,19 +248,46 @@ export const ChatPage: React.FC = () => {
             {activeDataset?.row_count !== undefined && (
               <p className="text-xs text-slate-500">Rows: {activeDataset.row_count}</p>
             )}
+            {conversationId && (
+              <p className="text-xs text-slate-500 mt-1 truncate" title={conversationId}>
+                Thread: {conversationId.slice(0, 8)}...
+              </p>
+            )}
           </Card>
           <div className="flex flex-col gap-2">
             <Button variant="secondary" onClick={() => navigate("/")}>
               Change Plugin/Dataset
             </Button>
             <Button onClick={() => setShowUpload(true)}>Upload New Dataset</Button>
+            <Button variant="ghost" onClick={handleNewConversation}>
+              New Conversation
+            </Button>
           </div>
+
+          <Card title="Navigation">
+            <div className="flex flex-col gap-1 text-sm">
+              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/history")}>
+                Query History
+              </button>
+              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/dashboards")}>
+                My Dashboards
+              </button>
+              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/connectors")}>
+                Data Connectors
+              </button>
+              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/schedules")}>
+                Scheduled Reports
+              </button>
+            </div>
+          </Card>
         </div>
 
         <div className="space-y-4">
           <header>
             <h1 className="text-2xl font-bold text-slate-900">Chat with your data</h1>
-            <p className="text-sm text-slate-600">SQL trace, freshness, and confidence are shown for every answer.</p>
+            <p className="text-sm text-slate-600">
+              Multi-turn conversations with SQL trace, freshness, confidence, and AI narratives.
+            </p>
           </header>
 
           {!canChat && (
@@ -151,7 +305,7 @@ export const ChatPage: React.FC = () => {
                 <div className="flex gap-2">
                   <input
                     className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
-                    placeholder="Ask a question..."
+                    placeholder="Ask a question (follow-ups work!)..."
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -165,7 +319,9 @@ export const ChatPage: React.FC = () => {
                     {loading ? "Thinking..." : "Send"}
                   </Button>
                 </div>
-                <div className="text-xs text-slate-500">Enter to send. Your queries are constrained to plugin schema.</div>
+                <div className="text-xs text-slate-500">
+                  Enter to send. Follow-up questions use conversation context. Your queries are constrained to plugin schema.
+                </div>
               </div>
 
               <div className="space-y-4">
@@ -178,15 +334,47 @@ export const ChatPage: React.FC = () => {
                       <p className="text-sm text-slate-800 whitespace-pre-wrap">{m.content}</p>
                     ) : (
                       <>
-                        {renderAnswer(m.content as ChatResponse)}
+                        {renderAnswer(m.content as ChatResponse, idx)}
                         <TrustPanel
                           confidence={(m.content as ChatResponse).confidence}
                           dataLastUpdated={(m.content as ChatResponse).data_last_updated}
                           sql={(m.content as ChatResponse).sql}
                         />
-                        {m.content.answer_type === "text" && (
+                        {(m.content as ChatResponse).answer_type === "text" && (
                           <p className="mt-2 text-xs text-slate-500">{(m.content as ChatResponse).explanation}</p>
                         )}
+
+                        {/* Feedback buttons */}
+                        <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-2">
+                          {feedbackGiven[idx] ? (
+                            <span className="text-xs text-slate-500">
+                              {feedbackGiven[idx] === 1 ? "Rated helpful" : "Rated not helpful"}
+                            </span>
+                          ) : (
+                            <>
+                              <button
+                                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-500 hover:bg-green-50 hover:text-green-700 transition"
+                                onClick={() => handleFeedback(idx, 1, m.content as ChatResponse)}
+                                title="This answer was helpful"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                  <path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 7.933a4 4 0 00-.8 2.4z" />
+                                </svg>
+                                Helpful
+                              </button>
+                              <button
+                                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-700 transition"
+                                onClick={() => handleFeedback(idx, -1, m.content as ChatResponse)}
+                                title="This answer was not helpful"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 rotate-180" viewBox="0 0 20 20" fill="currentColor">
+                                  <path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 7.933a4 4 0 00-.8 2.4z" />
+                                </svg>
+                                Not helpful
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </>
                     )}
                   </div>

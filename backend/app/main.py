@@ -11,31 +11,27 @@ from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query, Header, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query, Header, BackgroundTasks, Request
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, text, JSON as JSON_TYPE, ForeignKey, Boolean
+from sqlalchemy import Column, text, JSON as JSON_TYPE, ForeignKey, Boolean
 from sqlalchemy import Index
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session
 from sqlalchemy.types import Integer, String, TIMESTAMP, NUMERIC, UUID as UUID_TYPE, Text
 from dataclasses import asdict
+
+# Shared database objects (engine, session, Base)
+from app.database import engine, SessionLocal, Base
 
 # Import NL-to-SQL logic
 from app import nl_to_sql
 from app.insight_engine import InsightEngine
 from app.metrics.compiler import compile_metrics
 
+# New-feature models (must be imported so Base.metadata sees them)
+import app.models_v2  # noqa: F401
+
 # Load environment variables
 load_dotenv()
-
-# Database setup
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable not set")
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 # Logging setup (structured-ish JSON)
 logging.basicConfig(
@@ -148,6 +144,8 @@ class ChatQuery(BaseModel):
     query: str
     plugin: str = "restaurant"  # Default plugin
     dataset_id: Optional[str] = None
+    conversation_id: Optional[str] = None  # multi-turn thread id
+    conversation_history: Optional[List[dict]] = None  # [{role, content}]
 
 class PluginSwitchRequest(BaseModel):
     plugin: str
@@ -220,6 +218,19 @@ def create_db_and_tables():
         logger.error(f"Error initializing plugins: {e}")
 
 app = FastAPI(on_startup=[create_db_and_tables])
+
+# Register v2 feature routes
+from app.routes_v2 import router as v2_router
+app.include_router(v2_router)
+
+# CORS middleware for frontend
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Dependency ---
 def get_db():
@@ -706,7 +717,13 @@ def list_jobs(plugin_id: Optional[str] = None, status: Optional[str] = None, lim
 
 
 @app.post("/chat")
-def chat(chat_query: ChatQuery, db: Session = Depends(get_db)):
+def chat(chat_query: ChatQuery, request: Request = None, db: Session = Depends(get_db)):
+    # ── Rate limiting ───────────────────────────────────────────────
+    from app.routes_v2 import check_rate_limit, log_llm_cost, record_query_history, save_conversation_message, get_conversation_history
+    client_ip = request.client.host if request and request.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait before sending more requests.")
+
     last_updated = get_last_updated(db)
     t0 = time.time()
     generated_sql = None
@@ -717,14 +734,30 @@ def chat(chat_query: ChatQuery, db: Session = Depends(get_db)):
         dataset_id = chat_query.dataset_id
         ds = get_dataset_or_400(db, dataset_id, active_plugin.plugin_name)
         dataset_version = ds.version
-        
+
+        # ── Multi-turn: resolve conversation history ────────────────
+        conversation_history = chat_query.conversation_history or []
+        thread_id = None
+        if chat_query.conversation_id:
+            try:
+                thread_id = UUID(str(chat_query.conversation_id))
+                if not conversation_history:
+                    conversation_history = get_conversation_history(db, thread_id)
+            except Exception:
+                pass  # ignore invalid conversation_id
+
         # First, try to satisfy insight-focused questions from cached insights
         cached_response = maybe_answer_with_cached_insights(chat_query.query, active_plugin.plugin_name, dataset_id, db, last_updated)
         if cached_response:
             return cached_response
 
-        # Generate SQL with multi-step guardrails
-        generation = nl_to_sql.generate_sql(chat_query.query, dataset_id=str(ds.dataset_id), dataset_version=dataset_version)
+        # Generate SQL with multi-step guardrails (pass conversation context)
+        generation = nl_to_sql.generate_sql(
+            chat_query.query,
+            dataset_id=str(ds.dataset_id),
+            dataset_version=dataset_version,
+            conversation_history=conversation_history,
+        )
         generated_sql = generation.sql
 
         if generation.intent != "analytics_query" or not generated_sql:
@@ -843,16 +876,103 @@ def chat(chat_query: ChatQuery, db: Session = Depends(get_db)):
             "ms": exec_ms,
         }))
         
+        # Use LLM-provided chart hint and summary if available, else apply heuristic
+        chart_hint = getattr(generation, "chart_hint", "none") or "none"
+        summary = getattr(generation, "summary", "") or ""
+
+        # Heuristic fallback for chart_hint
+        if chart_hint == "none" and answer_type == "table" and isinstance(answer, list) and len(answer) > 0:
+            cols = list(answer[0].keys()) if answer else []
+            time_keywords = {"date", "day", "month", "year", "week", "hour", "time", "period", "quarter"}
+            has_time = any(any(kw in c.lower() for kw in time_keywords) for c in cols)
+            num_cols = [c for c in cols if isinstance(answer[0].get(c), (int, float))]
+            if has_time:
+                chart_hint = "line" if len(num_cols) <= 1 else "area"
+            elif len(answer) <= 8 and len(num_cols) == 1:
+                chart_hint = "pie"
+            elif len(num_cols) >= 1:
+                chart_hint = "bar"
+
+        # Fallback summary
+        if not summary:
+            if answer_type == "table" and isinstance(answer, list):
+                summary = f"Returned {len(answer)} rows."
+            elif answer_type == "number":
+                summary = f"The result is {answer}."
+
+        # ── Narrative generation (LLM-powered) ──────────────────────
+        narrative = ""
+        try:
+            from app.llm_service import generate_narrative, LLMConfig as _LLMConfig
+            _cfg = _LLMConfig()
+            if _cfg.available:
+                narrative = generate_narrative(
+                    question=chat_query.query,
+                    sql=scoped_sql,
+                    result_data=answer,
+                    answer_type=answer_type,
+                    config=_cfg,
+                )
+                # Estimate token usage for cost tracking
+                input_est = len(chat_query.query) // 4 + len(scoped_sql) // 4 + 200
+                output_est = len(narrative) // 4 if narrative else 0
+                log_llm_cost(db, active_plugin.plugin_name, _cfg.model, input_est, output_est, "/chat/narrative")
+        except Exception as narr_err:
+            logger.warning(f"Narrative generation skipped: {narr_err}")
+
+        # ── Record query history (server-side) ──────────────────────
+        history_id = None
+        try:
+            history_id = record_query_history(
+                db,
+                plugin_id=active_plugin.plugin_name,
+                dataset_id=dataset_id,
+                question=chat_query.query,
+                sql=scoped_sql,
+                answer_type=answer_type,
+                answer_summary=narrative or summary,
+                confidence=generation.confidence,
+            )
+        except Exception:
+            pass
+
+        # ── Multi-turn: persist messages ────────────────────────────
+        if thread_id:
+            try:
+                save_conversation_message(db, thread_id, "user", chat_query.query)
+                save_conversation_message(
+                    db, thread_id, "assistant",
+                    narrative or summary or str(answer)[:500],
+                    sql=scoped_sql, answer_type=answer_type,
+                )
+            except Exception:
+                pass
+
+        # ── LLM cost tracking for main SQL generation ───────────────
+        try:
+            from app.llm_service import LLMConfig as _LLMCfg2
+            _cfg2 = _LLMCfg2()
+            sql_input_est = len(chat_query.query) // 4 + 300
+            sql_output_est = len(scoped_sql) // 4 if scoped_sql else 0
+            log_llm_cost(db, active_plugin.plugin_name, _cfg2.model, sql_input_est, sql_output_est, "/chat/sql")
+        except Exception:
+            pass
+
         return {
             "answer_type": answer_type,
             "answer": answer,
             "explanation": "Validated SQL executed against dataset.",
+            "summary": summary,
+            "narrative": narrative,
+            "chart_hint": chart_hint,
             "sql": scoped_sql,
             "data_last_updated": last_updated,
             "confidence": generation.confidence,
             "plugin": active_plugin.plugin_name,
             "assumptions": generation.assumptions,
             "dataset_filter_enforced": True,
+            "conversation_id": str(thread_id) if thread_id else None,
+            "history_id": str(history_id) if history_id else None,
             "cache": {
                 "llm_sql": {"hit": generation.cache_info.get("llm_cache_hit", False), "key": generation.cache_info.get("llm_cache_key")},
                 "db_result": {"hit": db_cache_hit, "key": db_key[:8]},
@@ -1007,6 +1127,98 @@ def get_plugin_info():
         }
     except Exception as e:
         logger.error(f"Error getting plugin info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dashboard/stats")
+def get_dashboard_stats(
+    plugin: str = Query(...),
+    dataset_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Return aggregate stats for the dashboard KPI cards and charts.
+    Pulls data from the audit log and dataset tables so no LLM call is needed.
+    """
+    try:
+        # Total queries from audit log for this plugin
+        query_filter = "WHERE plugin_id = :plugin"
+        params: dict = {"plugin": plugin}
+        if dataset_id:
+            query_filter += " AND dataset_id = :dsid"
+            params["dsid"] = dataset_id
+
+        row = db.execute(
+            text(f"SELECT COUNT(*) AS cnt, "
+                 f"ROUND(AVG(CASE WHEN confidence='high' THEN 3 WHEN confidence='medium' THEN 2 ELSE 1 END),1) AS avg_c "
+                 f"FROM audit_log {query_filter}"),
+            params,
+        ).fetchone()
+
+        total_queries = int(row[0]) if row else 0
+        avg_score = float(row[1]) if row and row[1] else 0
+        avg_confidence = "high" if avg_score >= 2.5 else ("medium" if avg_score >= 1.5 else "low")
+
+        # Total rows in active dataset
+        total_rows = 0
+        if dataset_id:
+            ds_row = db.execute(
+                text("SELECT row_count FROM datasets WHERE dataset_id = :dsid AND is_deleted = false"),
+                {"dsid": dataset_id},
+            ).fetchone()
+            total_rows = int(ds_row[0]) if ds_row and ds_row[0] else 0
+
+        # Recent trend (daily query count or revenue if we can find it)
+        recent_trend = []
+        query_volume = []
+        try:
+            vol_rows = db.execute(
+                text(f"SELECT DATE(created_at) AS d, COUNT(*) AS cnt "
+                     f"FROM audit_log {query_filter} "
+                     f"GROUP BY DATE(created_at) ORDER BY d DESC LIMIT 14"),
+                params,
+            ).fetchall()
+            query_volume = [{"date": str(r[0]), "count": int(r[1])} for r in reversed(vol_rows)]
+        except Exception:
+            pass
+
+        # Try to compute revenue trend from sales data if dataset exists
+        if dataset_id:
+            try:
+                trend_rows = db.execute(
+                    text("SELECT DATE(order_datetime) AS d, SUM(quantity * item_price) AS rev "
+                         "FROM sales_transactions WHERE dataset_id = :dsid "
+                         "GROUP BY DATE(order_datetime) ORDER BY d LIMIT 30"),
+                    {"dsid": dataset_id},
+                ).fetchall()
+                recent_trend = [{"date": str(r[0]), "value": float(r[1] or 0)} for r in trend_rows]
+            except Exception:
+                pass
+
+        # Top categories from sales data
+        top_categories = []
+        if dataset_id:
+            try:
+                cat_rows = db.execute(
+                    text("SELECT COALESCE(category, 'Other') AS cat, SUM(quantity * item_price) AS rev "
+                         "FROM sales_transactions WHERE dataset_id = :dsid "
+                         "GROUP BY COALESCE(category, 'Other') ORDER BY rev DESC LIMIT 8"),
+                    {"dsid": dataset_id},
+                ).fetchall()
+                top_categories = [{"name": str(r[0]), "value": float(r[1] or 0)} for r in cat_rows]
+            except Exception:
+                pass
+
+        return {
+            "total_rows": total_rows,
+            "total_queries": total_queries,
+            "avg_confidence": avg_confidence,
+            "top_categories": top_categories,
+            "recent_trend": recent_trend,
+            "query_volume": query_volume,
+        }
+    except Exception as e:
+        logger.error(f"Error computing dashboard stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

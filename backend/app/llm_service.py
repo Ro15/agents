@@ -93,12 +93,15 @@ class SchemaContext:
 class LLMResponse:
     """Structured response from LLM."""
     
-    def __init__(self, sql: str, answer_type: str, notes: str = "", assumptions: Optional[List[str]] = None, model_name: Optional[str] = None):
+    def __init__(self, sql: str, answer_type: str, notes: str = "", assumptions: Optional[List[str]] = None,
+                 model_name: Optional[str] = None, chart_hint: str = "none", summary: str = ""):
         self.sql = sql
         self.answer_type = answer_type  # "number", "table", or "text"
         self.notes = notes
         self.assumptions = assumptions or []
         self.model_name = model_name
+        self.chart_hint = chart_hint
+        self.summary = summary
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -107,7 +110,78 @@ class LLMResponse:
             "notes": self.notes,
             "assumptions": self.assumptions,
             "model_name": self.model_name,
+            "chart_hint": self.chart_hint,
+            "summary": self.summary,
         }
+
+
+def generate_narrative(
+    question: str,
+    sql: str,
+    result_data: Any,
+    answer_type: str,
+    config: Optional[LLMConfig] = None,
+) -> str:
+    """
+    Send query results back to the LLM to produce a human-friendly narrative.
+    E.g. "Revenue increased 12% week-over-week, driven primarily by Electronics…"
+    """
+    if config is None:
+        config = LLMConfig()
+    if not config.available:
+        return ""
+
+    # Build a compact representation of the result
+    if answer_type == "number" or (isinstance(result_data, (int, float, str)) and not isinstance(result_data, list)):
+        data_summary = f"Result: {result_data}"
+    elif isinstance(result_data, list):
+        # Truncate large result sets for the LLM context
+        preview = result_data[:20]
+        data_summary = f"Result ({len(result_data)} rows, showing first {len(preview)}):\n{json.dumps(preview, default=str)}"
+    else:
+        data_summary = f"Result: {json.dumps(result_data, default=str)[:2000]}"
+
+    system_prompt = (
+        "You are a data analyst assistant. Given a user's question, the SQL that answered it, "
+        "and the query results, write a concise 1-3 sentence narrative that explains the data "
+        "in plain business English. Focus on insights, trends, and key takeaways. "
+        "Do NOT include SQL or technical jargon. Return ONLY the narrative text."
+    )
+    user_prompt = f"Question: {question}\nSQL: {sql}\n{data_summary}"
+
+    try:
+        if config.provider == "openai":
+            response = openai.ChatCompletion.create(
+                model=config.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            return response.choices[0].message["content"].strip()
+        else:
+            model_name = config.model
+            if not model_name.startswith("models/"):
+                model_name = f"models/{model_name}"
+            model = genai.GenerativeModel(model_name)
+            gen_response = model.generate_content(
+                system_prompt + "\n\n" + user_prompt,
+                generation_config={"temperature": 0.3, "max_output_tokens": 300},
+            )
+            text_out = ""
+            if getattr(gen_response, "candidates", None):
+                for part in gen_response.candidates[0].content.parts:
+                    if hasattr(part, "text"):
+                        text_out = part.text
+                        break
+            if not text_out:
+                text_out = (getattr(gen_response, "text", "") or "").strip()
+            return text_out
+    except Exception as e:
+        logger.warning(f"Narrative generation failed: {e}")
+        return ""
 
 
 def generate_sql_with_llm(
@@ -117,6 +191,7 @@ def generate_sql_with_llm(
     feedback: Optional[Dict[str, Any]] = None,
     timezone: str = "UTC",
     today_iso: Optional[str] = None,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
 ) -> Optional[LLMResponse]:
     """
     Generates SQL from a natural language question using an LLM.
@@ -153,8 +228,12 @@ IMPORTANT RULES:
 {
     "sql": "SELECT ...",
     "answer_type": "number|table|text",
+    "chart_hint": "line|bar|pie|area|none",
+    "summary": "One-sentence plain-English summary of the expected answer",
     "assumptions": ["optional reasoning or assumptions"]
 }
+- chart_hint: suggest the best chart for the result. Use "line" for time-series, "bar" for comparisons, "pie" for composition (<=8 groups), "area" for multi-metric time-series, "none" for scalars or text.
+- summary: a short human-friendly explanation of what the data means.
 7. Do NOT include dataset_id filters; the system injects them automatically.
 
 ALLOWED OPERATIONS:
@@ -170,11 +249,20 @@ FORBIDDEN OPERATIONS:
 - Any access to system tables or functions
 """
     
+    # Build conversation context block for multi-turn
+    conversation_block = ""
+    if conversation_history:
+        conversation_block = "\n## Conversation History (for context — answer the latest question)\n"
+        for turn in conversation_history[-10:]:  # last 10 messages
+            role = turn.get("role", "user")
+            content = (turn.get("content") or "")[:500]  # truncate long answers
+            conversation_block += f"- {role}: {content}\n"
+
     user_prompt = f"""{schema_prompt}
 
 ## Question
 {question}
-
+{conversation_block}
 ## Context
 - Timezone: {timezone}
 - Today: {today_iso or "unknown"}
@@ -247,13 +335,18 @@ Generate a PostgreSQL query to answer this question. Return ONLY a valid JSON ob
         answer_type = response_json.get("answer_type", "text")
         notes = response_json.get("notes", "") or response_json.get("explanation", "")
         assumptions = response_json.get("assumptions") or []
+        chart_hint = response_json.get("chart_hint", "none") or "none"
+        summary = response_json.get("summary", "") or ""
         
         if not sql:
             logger.error("LLM returned empty SQL")
             return None
         
         logger.info(f"Generated SQL: {sql}")
-        return LLMResponse(sql=sql, answer_type=answer_type, notes=notes, assumptions=assumptions, model_name=config.model)
+        return LLMResponse(
+            sql=sql, answer_type=answer_type, notes=notes, assumptions=assumptions,
+            model_name=config.model, chart_hint=chart_hint, summary=summary,
+        )
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse LLM response as JSON: {e}")

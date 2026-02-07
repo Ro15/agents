@@ -6,6 +6,12 @@ import { InsightsPage } from "./pages/Insights";
 import { PluginCatalogPage } from "./pages/PluginCatalog";
 import { PluginDetailPage } from "./pages/PluginDetail";
 import { DatasetsPage } from "./pages/Datasets";
+import { QueryHistoryPage } from "./pages/QueryHistory";
+import { DashboardListPage, DashboardDetailPage } from "./pages/DashboardBuilder";
+import { ConnectorsPage } from "./pages/Connectors";
+import { SchedulesPage } from "./pages/Schedules";
+import { DataCatalogPage } from "./pages/DataCatalog";
+import { UsagePage } from "./pages/Usage";
 import { AppStateProvider, useAppState } from "./state";
 import { ToastProvider } from "./components/Toast";
 import { TopNav } from "./components/TopNav";
@@ -32,6 +38,14 @@ function App() {
                 <Route path="/datasets" element={<DatasetsPage onOpenDatasetPicker={() => setShowDatasetPicker(true)} />} />
                 <Route path="/chat" element={<ChatPage />} />
                 <Route path="/insights" element={<InsightsPage />} />
+                {/* New feature routes */}
+                <Route path="/history" element={<QueryHistoryPage />} />
+                <Route path="/dashboards" element={<DashboardListPage />} />
+                <Route path="/dashboards/:dashboardId" element={<DashboardDetailPage />} />
+                <Route path="/connectors" element={<ConnectorsPage />} />
+                <Route path="/schedules" element={<SchedulesPage />} />
+                <Route path="/catalog" element={<DataCatalogPage />} />
+                <Route path="/usage" element={<UsagePage />} />
               </Routes>
             </main>
             {datasetPicker}
