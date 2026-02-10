@@ -440,7 +440,9 @@ def run_schedule_now(report_id: str, db: Session = Depends(get_db)):
 # DATA CONNECTORS
 # ═══════════════════════════════════════════════════════════════════════
 
-SUPPORTED_CONNECTOR_TYPES = {"postgresql", "mysql", "mssql", "bigquery", "snowflake", "excel", "sheets", "api"}
+from app.connectors.factory import get_connector as _make_connector, CONNECTOR_REGISTRY
+
+SUPPORTED_CONNECTOR_TYPES = set(CONNECTOR_REGISTRY.keys()) | {"postgresql", "mysql", "mssql", "bigquery", "snowflake", "excel", "sheets", "api", "s3", "gcs", "azure"}
 
 class ConnectorCreateRequest(BaseModel):
     name: str
@@ -505,26 +507,103 @@ def test_connector(connector_id: str, db: Session = Depends(get_db)):
     cid = parse_uuid(connector_id, "connector_id")
     c = db.query(DataConnector).filter(DataConnector.connector_id == cid).first()
     if not c: raise HTTPException(status_code=404, detail="Connector not found")
-    status, message = "configured", f"{c.connector_type} connector configured."
-    if c.connector_type == "postgresql":
-        try:
-            from sqlalchemy import create_engine as _ce
-            url = (c.config or {}).get("url", "")
-            if url:
-                te = _ce(url); conn = te.connect(); conn.execute(text("SELECT 1")); conn.close(); te.dispose()
-                status, message = "connected", "Connection successful"
-        except Exception as e:
-            status, message = "error", f"Connection failed: {type(e).__name__}"
+    try:
+        conn_obj = _make_connector(c.connector_type, c.config or {})
+        status, message = conn_obj.test_connection()
+    except Exception as e:
+        status, message = "error", f"{type(e).__name__}: {e}"
     c.status = status; db.commit()
     return {"connector_id": str(c.connector_id), "status": status, "message": message}
 
-@router.post("/connectors/{connector_id}/sync")
-def sync_connector(connector_id: str, db: Session = Depends(get_db)):
+@router.get("/connectors/{connector_id}/tables")
+def list_remote_tables(connector_id: str, db: Session = Depends(get_db)):
+    """List available tables/sheets/files from the connected data source."""
     cid = parse_uuid(connector_id, "connector_id")
     c = db.query(DataConnector).filter(DataConnector.connector_id == cid).first()
     if not c: raise HTTPException(status_code=404, detail="Connector not found")
-    c.last_sync_at = datetime.utcnow(); db.commit()
-    return {"connector_id": str(c.connector_id), "status": "sync_triggered", "last_sync_at": c.last_sync_at.isoformat(), "message": "Sync initiated."}
+    try:
+        conn_obj = _make_connector(c.connector_type, c.config or {})
+        tables = conn_obj.fetch_tables()
+        return {"connector_id": str(c.connector_id), "tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list tables: {e}")
+
+@router.get("/connectors/{connector_id}/schema/{table_name}")
+def get_remote_table_schema(connector_id: str, table_name: str, db: Session = Depends(get_db)):
+    """Fetch schema for a specific remote table."""
+    cid = parse_uuid(connector_id, "connector_id")
+    c = db.query(DataConnector).filter(DataConnector.connector_id == cid).first()
+    if not c: raise HTTPException(status_code=404, detail="Connector not found")
+    try:
+        conn_obj = _make_connector(c.connector_type, c.config or {})
+        schema = conn_obj.fetch_schema(table_name)
+        return {"connector_id": str(c.connector_id), "table": table_name, "columns": schema}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch schema: {e}")
+
+@router.post("/connectors/{connector_id}/sync")
+def sync_connector(
+    connector_id: str,
+    table_name: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
+    plugin_id: Optional[str] = Query("default"),
+    db: Session = Depends(get_db),
+):
+    """
+    Sync data from the connected source into a new dataset.
+    Extracts data from the specified table (or first available),
+    auto-detects schema, creates a dynamic table, and loads data.
+    """
+    cid = parse_uuid(connector_id, "connector_id")
+    c = db.query(DataConnector).filter(DataConnector.connector_id == cid).first()
+    if not c: raise HTTPException(status_code=404, detail="Connector not found")
+
+    try:
+        conn_obj = _make_connector(c.connector_type, c.config or {})
+
+        # Determine which table to sync
+        target = table_name
+        if not target:
+            tables = conn_obj.fetch_tables()
+            if not tables:
+                raise HTTPException(status_code=400, detail="No tables found in the source. Specify table_name.")
+            target = tables[0]
+
+        # Extract data
+        df = conn_obj.extract_data(target, limit=limit)
+        if df.empty:
+            raise HTTPException(status_code=400, detail=f"No data returned from '{target}'")
+
+        # Run shared ingestion pipeline
+        from app.ingestion_service import run_ingestion_pipeline
+        from app.database import engine
+
+        pid = plugin_id or c.plugin_id or "default"
+        result = run_ingestion_pipeline(
+            engine, db, df,
+            plugin_id=pid,
+            name=f"{c.name} — {target}",
+            source_filename=f"connector:{c.connector_type}/{target}",
+            file_format=c.connector_type,
+        )
+
+        c.last_sync_at = datetime.utcnow()
+        c.status = "connected"
+        db.commit()
+
+        from app.helpers import dataset_to_meta
+        meta = dataset_to_meta(result.dataset)
+        meta["message"] = f"Synced {result.rows_loaded} rows from '{target}' into {result.table_name}."
+        meta["source_table"] = target
+        meta["load_errors"] = result.load_errors
+        return meta
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Connector sync error for {connector_id}, table={table_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════

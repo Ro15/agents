@@ -10,3 +10,18 @@ google-generativeai==0.8.3
 pytest
 PyYAML
 python-multipart
+
+# ── Data ingestion dependencies ─────────────
+openpyxl                    # Excel (.xlsx) parsing
+pymysql                     # MySQL connector
+gspread                     # Google Sheets API
+google-auth                 # Auth for Google Sheets & BigQuery
+httpx                       # REST API connector (async HTTP client)
+
+# ── Optional cloud connectors (install when needed) ──
+# snowflake-connector-python
+# google-cloud-bigquery
+# google-cloud-storage
+# boto3                     # AWS S3
+# azure-storage-blob        # Azure Blob Storage
+# pyodbc                    # SQL Server (MSSQL)

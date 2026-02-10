@@ -1,0 +1,31 @@
+transaction_id,date,account_id,account_type,description,category,debit,credit,balance,currency,merchant
+TXN-10001,2025-02-01,ACC-001,Checking,Salary Deposit,Income,0,5200.00,5200.00,USD,Acme Corp
+TXN-10002,2025-02-01,ACC-001,Checking,Rent Payment,Housing,1800.00,0,3400.00,USD,Sunrise Apartments
+TXN-10003,2025-02-02,ACC-001,Checking,Grocery Store,Food,127.45,0,3272.55,USD,Whole Foods
+TXN-10004,2025-02-02,ACC-002,Savings,Transfer In,Transfer,0,500.00,12500.00,USD,Internal
+TXN-10005,2025-02-03,ACC-001,Checking,Electric Bill,Utilities,89.30,0,3183.25,USD,City Power Co
+TXN-10006,2025-02-03,ACC-001,Checking,Gas Station,Transportation,52.10,0,3131.15,USD,Shell
+TXN-10007,2025-02-04,ACC-001,Checking,Restaurant,Food,45.80,0,3085.35,USD,Olive Garden
+TXN-10008,2025-02-04,ACC-003,Credit,Online Shopping,Shopping,234.99,0,-234.99,USD,Amazon
+TXN-10009,2025-02-05,ACC-001,Checking,Coffee Shop,Food,6.75,0,3078.60,USD,Starbucks
+TXN-10010,2025-02-05,ACC-001,Checking,Gym Membership,Health,49.99,0,3028.61,USD,Planet Fitness
+TXN-10011,2025-02-06,ACC-003,Credit,Streaming Service,Entertainment,15.99,0,-250.98,USD,Netflix
+TXN-10012,2025-02-06,ACC-001,Checking,Water Bill,Utilities,35.00,0,2993.61,USD,City Water
+TXN-10013,2025-02-07,ACC-001,Checking,Freelance Payment,Income,0,850.00,3843.61,USD,Client XYZ
+TXN-10014,2025-02-07,ACC-003,Credit,Pharmacy,Health,28.50,0,-279.48,USD,CVS
+TXN-10015,2025-02-08,ACC-001,Checking,Internet Bill,Utilities,79.99,0,3763.62,USD,Comcast
+TXN-10016,2025-02-08,ACC-001,Checking,Grocery Store,Food,98.23,0,3665.39,USD,Trader Joes
+TXN-10017,2025-02-09,ACC-002,Savings,Interest Earned,Income,0,12.50,12512.50,USD,Bank
+TXN-10018,2025-02-09,ACC-003,Credit,Gas Station,Transportation,48.00,0,-327.48,USD,BP
+TXN-10019,2025-02-10,ACC-001,Checking,Insurance Premium,Insurance,175.00,0,3490.39,USD,State Farm
+TXN-10020,2025-02-10,ACC-003,Credit,Credit Card Payment,Payment,0,327.48,0.00,USD,Internal
+TXN-10021,2025-02-11,ACC-001,Checking,Phone Bill,Utilities,65.00,0,3425.39,USD,Verizon
+TXN-10022,2025-02-11,ACC-001,Checking,Parking,Transportation,15.00,0,3410.39,USD,City Parking
+TXN-10023,2025-02-12,ACC-001,Checking,Grocery Store,Food,112.87,0,3297.52,USD,Costco
+TXN-10024,2025-02-12,ACC-003,Credit,Clothing Store,Shopping,89.99,0,-89.99,USD,Zara
+TXN-10025,2025-02-13,ACC-001,Checking,Dentist Visit,Health,150.00,0,3147.52,USD,Dr. Smith DDS
+TXN-10026,2025-02-13,ACC-001,Checking,Dividend,Income,0,45.00,3192.52,USD,Vanguard
+TXN-10027,2025-02-14,ACC-001,Checking,Restaurant,Food,78.50,0,3114.02,USD,The Cheesecake Factory
+TXN-10028,2025-02-14,ACC-001,Checking,Flowers,Shopping,35.00,0,3079.02,USD,1-800-Flowers
+TXN-10029,2025-02-15,ACC-002,Savings,Transfer In,Transfer,0,300.00,12812.50,USD,Internal
+TXN-10030,2025-02-15,ACC-001,Checking,Salary Deposit,Income,0,5200.00,8279.02,USD,Acme Corp

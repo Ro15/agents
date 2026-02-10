@@ -6,10 +6,14 @@ import { Button } from "../components/Button";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Skeleton } from "../components/Skeleton";
+import { SchemaPreview } from "../components/SchemaPreview";
 import { useToast } from "../components/Toast";
 import { useApiData } from "../hooks/useApiData";
-import { listConnectors, createConnector, deleteConnector, testConnector, syncConnector } from "../lib/api";
-import type { DataConnector } from "../types";
+import {
+  listConnectors, createConnector, deleteConnector, testConnector,
+  getConnectorTables, syncConnectorTable,
+} from "../lib/api";
+import type { DataConnector, RemoteTablesResult } from "../types";
 
 const CONNECTOR_TYPES = [
   { value: "postgresql", label: "PostgreSQL" },
@@ -20,6 +24,9 @@ const CONNECTOR_TYPES = [
   { value: "excel", label: "Excel" },
   { value: "sheets", label: "Google Sheets" },
   { value: "api", label: "REST API" },
+  { value: "s3", label: "AWS S3" },
+  { value: "gcs", label: "Google Cloud Storage" },
+  { value: "azure", label: "Azure Blob" },
 ];
 
 const statusTone = (status: string): "info" | "warning" | "critical" | "success" | "neutral" => {
@@ -29,13 +36,19 @@ const statusTone = (status: string): "info" | "warning" | "critical" | "success"
 };
 
 export const ConnectorsPage: React.FC = () => {
-  const { activePlugin } = useAppState();
+  const { activePlugin, upsertDatasetForPlugin, setActiveDataset } = useAppState();
   const navigate = useNavigate();
   const { push } = useToast();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState("postgresql");
   const [newUrl, setNewUrl] = useState("");
+
+  // Remote table browser state
+  const [browsingId, setBrowsingId] = useState<string | null>(null);
+  const [remoteTables, setRemoteTables] = useState<string[]>([]);
+  const [loadingTables, setLoadingTables] = useState(false);
+  const [syncing, setSyncing] = useState<string | null>(null);
 
   const { data: connectors, loading, setData: setConnectors, refetch } = useApiData(
     () => listConnectors(activePlugin),
@@ -55,8 +68,7 @@ export const ConnectorsPage: React.FC = () => {
       });
       setConnectors((prev) => (prev ? [c, ...prev] : [c]));
       setShowCreate(false);
-      setNewName("");
-      setNewUrl("");
+      setNewName(""); setNewUrl("");
       push("Connector created!", "success");
     } catch (err: any) {
       push(err?.message || "Failed to create connector", "error");
@@ -75,33 +87,55 @@ export const ConnectorsPage: React.FC = () => {
     }
   }, [push, setConnectors]);
 
-  const handleSync = useCallback(async (id: string) => {
+  const handleBrowseTables = useCallback(async (id: string) => {
+    if (browsingId === id) { setBrowsingId(null); return; }
+    setLoadingTables(true);
+    setBrowsingId(id);
     try {
-      const res = await syncConnector(id);
+      const res = await getConnectorTables(id);
+      setRemoteTables(res.tables);
+    } catch (err: any) {
+      push(err?.message || "Failed to list tables", "error");
+      setBrowsingId(null);
+    } finally {
+      setLoadingTables(false);
+    }
+  }, [browsingId, push]);
+
+  const handleSyncTable = useCallback(async (connectorId: string, tableName: string) => {
+    setSyncing(tableName);
+    try {
+      const res = await syncConnectorTable(connectorId, tableName, activePlugin);
       push(res.message, "success");
+      // Add the new dataset to state
+      upsertDatasetForPlugin(activePlugin, res);
+      setActiveDataset(res);
       refetch();
     } catch (err: any) {
       push(err?.message || "Sync failed", "error");
+    } finally {
+      setSyncing(null);
     }
-  }, [push, refetch]);
+  }, [activePlugin, push, refetch, upsertDatasetForPlugin, setActiveDataset]);
 
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm("Delete this connector?")) return;
     try {
       await deleteConnector(id);
       setConnectors((prev) => prev ? prev.filter((c) => c.connector_id !== id) : prev);
+      if (browsingId === id) setBrowsingId(null);
       push("Connector deleted", "success");
     } catch {
       push("Failed to delete", "error");
     }
-  }, [push, setConnectors]);
+  }, [push, setConnectors, browsingId]);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Data Connectors</h1>
-          <p className="text-sm text-slate-600">Connect to external databases, APIs, Excel files, and cloud warehouses.</p>
+          <p className="text-sm text-slate-600">Connect to databases, APIs, cloud storage, Excel, and Google Sheets.</p>
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setShowCreate(true)}>Add Connector</Button>
@@ -178,12 +212,50 @@ export const ConnectorsPage: React.FC = () => {
                 </div>
                 <div className="flex gap-2">
                   <Button variant="ghost" size="sm" onClick={() => handleTest(c.connector_id)}>Test</Button>
-                  <Button variant="secondary" size="sm" onClick={() => handleSync(c.connector_id)}>Sync</Button>
+                  {c.status === "connected" && (
+                    <Button variant="secondary" size="sm" onClick={() => handleBrowseTables(c.connector_id)}>
+                      {browsingId === c.connector_id ? "Hide Tables" : "Browse Tables"}
+                    </Button>
+                  )}
                   <button className="text-xs text-red-500 hover:text-red-700 px-2" onClick={() => handleDelete(c.connector_id)}>
                     Delete
                   </button>
                 </div>
               </div>
+
+              {/* Remote table browser */}
+              {browsingId === c.connector_id && (
+                <div className="mt-3 border-t border-slate-100 pt-3">
+                  {loadingTables ? (
+                    <div className="space-y-2">
+                      <Skeleton className="h-6 w-full" />
+                      <Skeleton className="h-6 w-full" />
+                    </div>
+                  ) : remoteTables.length === 0 ? (
+                    <p className="text-xs text-slate-500">No tables found.</p>
+                  ) : (
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700 mb-2">
+                        Available tables ({remoteTables.length})
+                      </p>
+                      <div className="grid gap-1 max-h-48 overflow-y-auto">
+                        {remoteTables.map((tbl) => (
+                          <div key={tbl} className="flex items-center justify-between rounded px-2 py-1 hover:bg-slate-50">
+                            <span className="text-sm font-mono text-slate-800">{tbl}</span>
+                            <Button
+                              variant="secondary" size="sm"
+                              disabled={syncing === tbl}
+                              onClick={() => handleSyncTable(c.connector_id, tbl)}
+                            >
+                              {syncing === tbl ? "Syncing..." : "Import"}
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </Card>
           ))}
         </div>

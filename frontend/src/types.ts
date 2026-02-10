@@ -48,12 +48,49 @@ export interface DatasetMeta {
   row_count?: number;
   ingested_at?: string;
   plugin: string;
+  plugin_id?: string;
   filename?: string;
   source_filename?: string;
   created_at?: string;
   last_ingested_at?: string;
   version?: number;
   is_deleted?: boolean;
+  // Dynamic ingestion fields
+  table_name?: string | null;
+  schema_type?: "static" | "dynamic";
+  file_format?: string | null;
+  column_count?: number | null;
+}
+
+export interface UploadSchemaColumn {
+  column: string;
+  type: string;
+  nullable: boolean;
+  sample_values: string[];
+  distinct_count: number;
+}
+
+export interface UploadResult extends DatasetMeta {
+  message: string;
+  schema?: UploadSchemaColumn[];
+  load_errors?: number;
+}
+
+export interface ConnectorSyncResult extends DatasetMeta {
+  message: string;
+  source_table: string;
+  load_errors?: number;
+}
+
+export interface RemoteTablesResult {
+  connector_id: string;
+  tables: string[];
+}
+
+export interface RemoteSchemaResult {
+  connector_id: string;
+  table: string;
+  columns: { name: string; type: string; nullable: boolean }[];
 }
 
 export interface PluginMeta {

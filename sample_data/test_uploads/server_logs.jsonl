@@ -1,0 +1,15 @@
+{"timestamp": "2025-01-15T08:23:01Z", "level": "INFO", "service": "api-gateway", "endpoint": "/api/users", "method": "GET", "status_code": 200, "response_ms": 45, "user_id": "usr_001"}
+{"timestamp": "2025-01-15T08:23:05Z", "level": "INFO", "service": "api-gateway", "endpoint": "/api/orders", "method": "POST", "status_code": 201, "response_ms": 230, "user_id": "usr_002"}
+{"timestamp": "2025-01-15T08:23:12Z", "level": "WARN", "service": "auth-service", "endpoint": "/api/login", "method": "POST", "status_code": 401, "response_ms": 15, "user_id": "usr_003"}
+{"timestamp": "2025-01-15T08:23:18Z", "level": "ERROR", "service": "payment-service", "endpoint": "/api/payments", "method": "POST", "status_code": 500, "response_ms": 5200, "user_id": "usr_004"}
+{"timestamp": "2025-01-15T08:23:25Z", "level": "INFO", "service": "api-gateway", "endpoint": "/api/products", "method": "GET", "status_code": 200, "response_ms": 32, "user_id": "usr_001"}
+{"timestamp": "2025-01-15T08:24:01Z", "level": "INFO", "service": "api-gateway", "endpoint": "/api/orders", "method": "GET", "status_code": 200, "response_ms": 67, "user_id": "usr_005"}
+{"timestamp": "2025-01-15T08:24:15Z", "level": "WARN", "service": "api-gateway", "endpoint": "/api/users", "method": "PUT", "status_code": 429, "response_ms": 5, "user_id": "usr_002"}
+{"timestamp": "2025-01-15T08:24:30Z", "level": "INFO", "service": "search-service", "endpoint": "/api/search", "method": "GET", "status_code": 200, "response_ms": 150, "user_id": "usr_006"}
+{"timestamp": "2025-01-15T08:25:00Z", "level": "ERROR", "service": "api-gateway", "endpoint": "/api/orders", "method": "POST", "status_code": 502, "response_ms": 30000, "user_id": "usr_007"}
+{"timestamp": "2025-01-15T08:25:10Z", "level": "INFO", "service": "auth-service", "endpoint": "/api/login", "method": "POST", "status_code": 200, "response_ms": 85, "user_id": "usr_008"}
+{"timestamp": "2025-01-15T08:25:22Z", "level": "INFO", "service": "api-gateway", "endpoint": "/api/products", "method": "GET", "status_code": 200, "response_ms": 28, "user_id": "usr_001"}
+{"timestamp": "2025-01-15T08:25:45Z", "level": "WARN", "service": "payment-service", "endpoint": "/api/payments", "method": "POST", "status_code": 408, "response_ms": 15000, "user_id": "usr_009"}
+{"timestamp": "2025-01-15T08:26:01Z", "level": "INFO", "service": "api-gateway", "endpoint": "/api/users", "method": "GET", "status_code": 200, "response_ms": 40, "user_id": "usr_010"}
+{"timestamp": "2025-01-15T08:26:15Z", "level": "INFO", "service": "search-service", "endpoint": "/api/search", "method": "GET", "status_code": 200, "response_ms": 120, "user_id": "usr_005"}
+{"timestamp": "2025-01-15T08:26:30Z", "level": "ERROR", "service": "auth-service", "endpoint": "/api/login", "method": "POST", "status_code": 503, "response_ms": 60000, "user_id": "usr_011"}

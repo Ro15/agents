@@ -1,0 +1,26 @@
+order_id,order_date,customer_name,product,category,quantity,unit_price,total_amount,payment_method,region
+ORD-001,2025-01-05,Alice Johnson,Espresso Machine,Appliances,1,299.99,299.99,Credit Card,Northeast
+ORD-002,2025-01-05,Bob Smith,Coffee Beans 1kg,Food & Beverage,3,24.99,74.97,Debit Card,Southeast
+ORD-003,2025-01-06,Carol White,Milk Frother,Appliances,2,49.99,99.98,Credit Card,West
+ORD-004,2025-01-06,David Brown,Green Tea Box,Food & Beverage,5,12.50,62.50,Cash,Northeast
+ORD-005,2025-01-07,Eve Davis,French Press,Appliances,1,39.99,39.99,Credit Card,Midwest
+ORD-006,2025-01-07,Frank Miller,Chocolate Syrup,Food & Beverage,4,8.99,35.96,Debit Card,Southeast
+ORD-007,2025-01-08,Grace Lee,Ceramic Mug Set,Accessories,2,29.99,59.98,Credit Card,West
+ORD-008,2025-01-08,Henry Wilson,Cold Brew Maker,Appliances,1,69.99,69.99,Cash,Northeast
+ORD-009,2025-01-09,Ivy Chen,Matcha Powder,Food & Beverage,2,34.99,69.98,Credit Card,Midwest
+ORD-010,2025-01-09,Jack Taylor,Travel Tumbler,Accessories,3,19.99,59.97,Debit Card,Southeast
+ORD-011,2025-01-10,Karen Adams,Espresso Machine,Appliances,1,299.99,299.99,Credit Card,West
+ORD-012,2025-01-10,Leo Martinez,Coffee Beans 1kg,Food & Beverage,2,24.99,49.98,Cash,Midwest
+ORD-013,2025-01-11,Mia Robinson,Pour Over Kit,Appliances,1,45.00,45.00,Credit Card,Northeast
+ORD-014,2025-01-11,Noah Clark,Vanilla Syrup,Food & Beverage,6,7.99,47.94,Debit Card,Southeast
+ORD-015,2025-01-12,Olivia Hall,Insulated Carafe,Accessories,1,54.99,54.99,Credit Card,West
+ORD-016,2025-01-12,Peter Young,Espresso Cups 4pk,Accessories,2,22.00,44.00,Cash,Midwest
+ORD-017,2025-01-13,Quinn King,Coffee Grinder,Appliances,1,89.99,89.99,Credit Card,Northeast
+ORD-018,2025-01-13,Ruby Scott,Chai Tea Box,Food & Beverage,3,15.00,45.00,Debit Card,Southeast
+ORD-019,2025-01-14,Sam Turner,Latte Art Set,Accessories,1,35.00,35.00,Credit Card,West
+ORD-020,2025-01-14,Tina Harris,Coffee Beans 1kg,Food & Beverage,4,24.99,99.96,Cash,Northeast
+ORD-021,2025-01-15,Uma Phillips,Drip Coffee Maker,Appliances,1,149.99,149.99,Credit Card,Midwest
+ORD-022,2025-01-15,Victor Evans,Hazelnut Syrup,Food & Beverage,3,8.99,26.97,Debit Card,Southeast
+ORD-023,2025-01-16,Wendy Campbell,Bamboo Coasters,Accessories,5,6.99,34.95,Cash,West
+ORD-024,2025-01-16,Xavier Murphy,Espresso Machine,Appliances,1,299.99,299.99,Credit Card,Northeast
+ORD-025,2025-01-17,Yara Collins,Organic Tea Sampler,Food & Beverage,2,28.00,56.00,Credit Card,Midwest

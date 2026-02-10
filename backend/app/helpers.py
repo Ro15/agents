@@ -46,13 +46,14 @@ def get_dataset_or_400(db: Session, dataset_id: Optional[str], plugin_id: str) -
     )
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    if ds.plugin_id != plugin_id:
+    # Dynamic datasets can belong to any plugin; only enforce for static
+    if getattr(ds, "schema_type", "static") == "static" and ds.plugin_id != plugin_id:
         raise HTTPException(status_code=400, detail="Dataset does not belong to the specified plugin")
     return ds
 
 
 def dataset_to_meta(ds: Dataset) -> dict:
-    return {
+    meta = {
         "dataset_id": str(ds.dataset_id),
         "plugin_id": ds.plugin_id,
         "plugin": ds.plugin_id,
@@ -64,7 +65,13 @@ def dataset_to_meta(ds: Dataset) -> dict:
         "filename": ds.source_filename,
         "is_deleted": ds.is_deleted,
         "version": ds.version,
+        # Dynamic ingestion fields
+        "table_name": getattr(ds, "table_name", None),
+        "schema_type": getattr(ds, "schema_type", "static"),
+        "file_format": getattr(ds, "file_format", None),
+        "column_count": getattr(ds, "column_count", None),
     }
+    return meta
 
 
 # ── Plugin management ───────────────────────────────────────────────────

@@ -1,0 +1,22 @@
+[
+  {"student_id": "STU-001", "name": "Emma Thompson", "grade_level": 10, "subject": "Mathematics", "teacher": "Mr. Rodriguez", "quarter": "Q1", "score": 92, "grade": "A", "attendance_pct": 98.5, "extra_credit": true},
+  {"student_id": "STU-001", "name": "Emma Thompson", "grade_level": 10, "subject": "English", "teacher": "Ms. Park", "quarter": "Q1", "score": 88, "grade": "B+", "attendance_pct": 98.5, "extra_credit": false},
+  {"student_id": "STU-001", "name": "Emma Thompson", "grade_level": 10, "subject": "Science", "teacher": "Dr. Chen", "quarter": "Q1", "score": 95, "grade": "A", "attendance_pct": 98.5, "extra_credit": true},
+  {"student_id": "STU-002", "name": "Liam Garcia", "grade_level": 11, "subject": "Mathematics", "teacher": "Mr. Rodriguez", "quarter": "Q1", "score": 78, "grade": "C+", "attendance_pct": 91.0, "extra_credit": false},
+  {"student_id": "STU-002", "name": "Liam Garcia", "grade_level": 11, "subject": "English", "teacher": "Ms. Park", "quarter": "Q1", "score": 85, "grade": "B", "attendance_pct": 91.0, "extra_credit": false},
+  {"student_id": "STU-002", "name": "Liam Garcia", "grade_level": 11, "subject": "History", "teacher": "Mr. Walsh", "quarter": "Q1", "score": 90, "grade": "A-", "attendance_pct": 91.0, "extra_credit": true},
+  {"student_id": "STU-003", "name": "Sophia Kim", "grade_level": 10, "subject": "Mathematics", "teacher": "Mr. Rodriguez", "quarter": "Q1", "score": 97, "grade": "A+", "attendance_pct": 100.0, "extra_credit": true},
+  {"student_id": "STU-003", "name": "Sophia Kim", "grade_level": 10, "subject": "Science", "teacher": "Dr. Chen", "quarter": "Q1", "score": 93, "grade": "A", "attendance_pct": 100.0, "extra_credit": false},
+  {"student_id": "STU-003", "name": "Sophia Kim", "grade_level": 10, "subject": "Art", "teacher": "Ms. Rivera", "quarter": "Q1", "score": 88, "grade": "B+", "attendance_pct": 100.0, "extra_credit": false},
+  {"student_id": "STU-004", "name": "Noah Patel", "grade_level": 12, "subject": "Mathematics", "teacher": "Mr. Rodriguez", "quarter": "Q1", "score": 65, "grade": "D", "attendance_pct": 82.0, "extra_credit": false},
+  {"student_id": "STU-004", "name": "Noah Patel", "grade_level": 12, "subject": "English", "teacher": "Ms. Park", "quarter": "Q1", "score": 72, "grade": "C-", "attendance_pct": 82.0, "extra_credit": false},
+  {"student_id": "STU-004", "name": "Noah Patel", "grade_level": 12, "subject": "History", "teacher": "Mr. Walsh", "quarter": "Q1", "score": 68, "grade": "D+", "attendance_pct": 82.0, "extra_credit": false},
+  {"student_id": "STU-005", "name": "Ava Martinez", "grade_level": 11, "subject": "Science", "teacher": "Dr. Chen", "quarter": "Q1", "score": 91, "grade": "A-", "attendance_pct": 95.5, "extra_credit": true},
+  {"student_id": "STU-005", "name": "Ava Martinez", "grade_level": 11, "subject": "English", "teacher": "Ms. Park", "quarter": "Q1", "score": 94, "grade": "A", "attendance_pct": 95.5, "extra_credit": true},
+  {"student_id": "STU-005", "name": "Ava Martinez", "grade_level": 11, "subject": "Art", "teacher": "Ms. Rivera", "quarter": "Q1", "score": 99, "grade": "A+", "attendance_pct": 95.5, "extra_credit": true},
+  {"student_id": "STU-006", "name": "James Wilson", "grade_level": 10, "subject": "Mathematics", "teacher": "Mr. Rodriguez", "quarter": "Q1", "score": 83, "grade": "B", "attendance_pct": 94.0, "extra_credit": false},
+  {"student_id": "STU-006", "name": "James Wilson", "grade_level": 10, "subject": "History", "teacher": "Mr. Walsh", "quarter": "Q1", "score": 87, "grade": "B+", "attendance_pct": 94.0, "extra_credit": true},
+  {"student_id": "STU-006", "name": "James Wilson", "grade_level": 10, "subject": "Science", "teacher": "Dr. Chen", "quarter": "Q1", "score": 79, "grade": "C+", "attendance_pct": 94.0, "extra_credit": false},
+  {"student_id": "STU-007", "name": "Mia Chen", "grade_level": 12, "subject": "Mathematics", "teacher": "Mr. Rodriguez", "quarter": "Q1", "score": 100, "grade": "A+", "attendance_pct": 99.0, "extra_credit": true},
+  {"student_id": "STU-007", "name": "Mia Chen", "grade_level": 12, "subject": "Science", "teacher": "Dr. Chen", "quarter": "Q1", "score": 98, "grade": "A+", "attendance_pct": 99.0, "extra_credit": true}
+]

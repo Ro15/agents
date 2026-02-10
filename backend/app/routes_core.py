@@ -2,6 +2,7 @@
 Core API routes — the original endpoints for chat, upload, datasets,
 plugins, insights, jobs, dashboard stats, and health.
 """
+from __future__ import annotations
 
 import io
 import json
@@ -24,7 +25,7 @@ from app.database import engine, SessionLocal
 from app import nl_to_sql
 from app.insight_engine import InsightEngine
 from app.models import (
-    SalesTransaction, IngestionRun, Dataset, Job,
+    SalesTransaction, IngestionRun, Dataset, Job, ColumnProfile,
 )
 from app.helpers import (
     parse_uuid,
@@ -39,6 +40,9 @@ from app.helpers import (
     create_job,
     update_job_status,
 )
+from app.llm_service import SchemaContext, LLMConfig, generate_sql_with_llm, generate_narrative
+from app.routes_v2 import check_rate_limit, log_llm_cost, record_query_history, save_conversation_message, get_conversation_history
+from cache.cache import stable_hash, cache_get, cache_set, DB_RESULT_CACHE_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +51,10 @@ router = APIRouter()
 # Insight engine cache keyed by plugin name
 INSIGHT_ENGINES: dict[str, InsightEngine] = {}
 
-UPLOAD_ROOT = Path("/tmp/uploads")
-UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+# imports for universal ingestion pipeline
+from app.file_storage import save_file as archive_file
+from app.parsers import parse_file, SUPPORTED_EXTENSIONS
+from app.ingestion_service import run_ingestion_pipeline
 
 
 # ── Dependencies ────────────────────────────────────────────────────────
@@ -213,6 +219,78 @@ async def upload_sales_data(
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
 
 
+# ── Universal Upload (flexible schema) ──────────────────────────────────
+
+@router.post("/upload")
+async def upload_file_universal(
+    file: UploadFile = File(...),
+    dataset_name: Optional[str] = Query(None),
+    dataset_id: Optional[str] = Query(None),
+    plugin_id: Optional[str] = Query("default"),
+    sheet_name: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Universal file upload.
+    Accepts CSV, Excel (.xlsx/.xls), JSON, JSONL.
+    Auto-detects schema, creates a dynamic table, archives the file.
+    """
+    ext = Path(file.filename).suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+        )
+
+    try:
+        dataset_uuid = uuid4() if dataset_id is None else UUID(str(dataset_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid dataset_id format")
+
+    contents = await file.read()
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        # Archive the original file
+        file_path = archive_file(str(dataset_uuid), file.filename, contents)
+
+        # Parse into DataFrame
+        sheet = int(sheet_name) if sheet_name and sheet_name.isdigit() else (sheet_name or None)
+        df = parse_file(contents, file.filename, sheet_name=sheet)
+
+        # Run shared ingestion pipeline (detect → create table → load → register)
+        name = dataset_name or os.path.splitext(file.filename)[0]
+        result = run_ingestion_pipeline(
+            engine, db, df,
+            dataset_id=dataset_uuid,
+            plugin_id=plugin_id,
+            name=name,
+            source_filename=file.filename,
+            file_path=str(file_path),
+            file_format=ext.lstrip("."),
+        )
+
+        meta = dataset_to_meta(result.dataset)
+        meta["message"] = f"Successfully uploaded {file.filename}: {result.rows_loaded} rows into {result.table_name}."
+        meta["schema"] = [
+            {"column": cs.name, "type": cs.pg_type, "nullable": cs.nullable,
+             "sample_values": cs.sample_values[:3], "distinct_count": cs.distinct_count}
+            for cs in result.column_schemas
+        ]
+        meta["load_errors"] = result.load_errors
+        return meta
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Universal upload error for {file.filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
 # ── Datasets ────────────────────────────────────────────────────────────
 
 @router.get("/datasets")
@@ -280,8 +358,6 @@ def list_jobs(plugin_id: Optional[str] = None, status: Optional[str] = None, lim
 
 @router.post("/chat")
 def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = Depends(get_db)):
-    from app.routes_v2 import check_rate_limit, log_llm_cost, record_query_history, save_conversation_message, get_conversation_history
-
     # Rate limiting
     client_ip = request.client.host if request and request.client else "unknown"
     if not check_rate_limit(client_ip):
@@ -296,6 +372,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         dataset_id = chat_query.dataset_id
         ds = get_dataset_or_400(db, dataset_id, active_plugin.plugin_name)
         dataset_version = ds.version
+        is_dynamic = getattr(ds, "schema_type", "static") == "dynamic"
 
         # Multi-turn: resolve conversation history
         conversation_history = chat_query.conversation_history or []
@@ -308,16 +385,54 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             except Exception:
                 logger.debug(f"Invalid conversation_id: {chat_query.conversation_id}")
 
-        # Try cached insights first
-        cached_response = maybe_answer_with_cached_insights(chat_query.query, active_plugin.plugin_name, dataset_id, db, last_updated)
-        if cached_response:
-            return cached_response
+        # Try cached insights first (static datasets only)
+        if not is_dynamic:
+            cached_response = maybe_answer_with_cached_insights(chat_query.query, active_plugin.plugin_name, dataset_id, db, last_updated)
+            if cached_response:
+                return cached_response
 
-        # Generate SQL
-        generation = nl_to_sql.generate_sql(
-            chat_query.query, dataset_id=str(ds.dataset_id),
-            dataset_version=dataset_version, conversation_history=conversation_history,
-        )
+        # Generate SQL — dynamic vs static path
+        if is_dynamic:
+            # Build schema context from column_profiles
+            col_profiles = db.query(ColumnProfile).filter(
+                ColumnProfile.dataset_id == ds.dataset_id
+            ).order_by(ColumnProfile.column_name).all()
+            dynamic_cols = [
+                {"column_name": cp.column_name, "data_type": cp.data_type,
+                 "description": cp.description or ""}
+                for cp in col_profiles
+            ]
+            dyn_table = ds.table_name
+            schema_ctx = SchemaContext(
+                schema={}, allowed_tables={dyn_table},
+                allowed_columns={cp.column_name for cp in col_profiles},
+                plugin_name=active_plugin.plugin_name,
+                dynamic_columns=dynamic_cols,
+                dynamic_table=dyn_table,
+            )
+            config = LLMConfig()
+            today_iso = datetime.utcnow().date().isoformat()
+            llm_resp = generate_sql_with_llm(
+                chat_query.query, schema_ctx, config,
+                today_iso=today_iso,
+                conversation_history=conversation_history,
+            )
+            if llm_resp is None:
+                raise ValueError("LLM failed to generate SQL for this question")
+            generation = nl_to_sql.SQLGenerationResult(
+                sql=llm_resp.sql, answer_type=llm_resp.answer_type,
+                assumptions=llm_resp.assumptions or [], confidence="high",
+                intent="analytics_query", repairs=0,
+                model_name=llm_resp.model_name, failure_reason=None,
+                cache_info={"llm_cache_hit": False},
+                chart_hint=llm_resp.chart_hint, summary=llm_resp.summary,
+            )
+        else:
+            generation = nl_to_sql.generate_sql(
+                chat_query.query, dataset_id=str(ds.dataset_id),
+                dataset_version=dataset_version, conversation_history=conversation_history,
+            )
+
         generated_sql = generation.sql
 
         if generation.intent != "analytics_query" or not generated_sql:
@@ -338,8 +453,12 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 "assumptions": generation.assumptions,
             }
 
-        # Execute SQL
-        scoped_sql = nl_to_sql.SQL_GUARD.enforce_dataset_filter(generated_sql, "dataset_id")
+        # Execute SQL — different scoping for dynamic vs static
+        if is_dynamic:
+            # For dynamic datasets: SQL already targets the dynamic table, no dataset_id filter needed
+            scoped_sql = generated_sql
+        else:
+            scoped_sql = nl_to_sql.SQL_GUARD.enforce_dataset_filter(generated_sql, "dataset_id")
         scoped_sql = re.sub(
             r"DATE\('(\d{4}-\d{2}-\d{2})'\s*-\s*INTERVAL\s*'(\d+\s+day[s]?)'\)",
             r"(DATE '\1' - INTERVAL '\2')", scoped_sql, flags=re.IGNORECASE,
@@ -347,8 +466,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         conn = db.connection()
         conn.execute(text("SET statement_timeout = '5s';"))
 
-        from cache.cache import stable_hash, cache_get, cache_set, DB_RESULT_CACHE_TTL_SECONDS
-        params = {"dataset_id": ds.dataset_id}
+        params = {} if is_dynamic else {"dataset_id": ds.dataset_id}
         hash_params = {"dataset_id": str(ds.dataset_id)}
         sql_norm = scoped_sql.strip().rstrip(";")
         db_key = stable_hash({"ds": str(ds.dataset_id), "v": dataset_version, "sql": sql_norm, "params": hash_params})
@@ -419,7 +537,6 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         # Narrative generation
         narrative = ""
         try:
-            from app.llm_service import generate_narrative, LLMConfig
             cfg = LLMConfig()
             if cfg.available:
                 narrative = generate_narrative(question=chat_query.query, sql=scoped_sql, result_data=answer, answer_type=answer_type, config=cfg)
@@ -450,8 +567,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
 
         # LLM cost tracking for SQL generation
         try:
-            from app.llm_service import LLMConfig as _LLMCfg
-            _cfg = _LLMCfg()
+            _cfg = LLMConfig()
             log_llm_cost(db, active_plugin.plugin_name, _cfg.model, len(chat_query.query) // 4 + 300, len(scoped_sql) // 4 if scoped_sql else 0, "/chat/sql")
         except Exception:
             pass

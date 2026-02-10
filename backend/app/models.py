@@ -68,6 +68,12 @@ class Dataset(Base):
     source_filename = Column(String, nullable=True)
     is_deleted = Column(Boolean, server_default=text("false"))
     version = Column(Integer, nullable=False, server_default=text("1"))
+    # Dynamic ingestion fields
+    table_name = Column(String, nullable=True)           # e.g. "ds_abc123def456"
+    schema_type = Column(String, server_default=text("'static'"))  # "static" | "dynamic"
+    file_path = Column(String, nullable=True)            # path to archived file
+    file_format = Column(String, nullable=True)          # csv, xlsx, json, etc.
+    column_count = Column(Integer, nullable=True)
 
 
 class AIAuditLog(Base):

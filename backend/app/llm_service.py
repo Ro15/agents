@@ -60,7 +60,10 @@ class SchemaContext:
     """Encapsulates database schema information for LLM prompting."""
     
     def __init__(self, schema: Dict[str, Any], allowed_tables: set, allowed_columns: set, 
-                 plugin_name: str = "", metrics_description: str = "", views: Optional[List[str]] = None):
+                 plugin_name: str = "", metrics_description: str = "",
+                 views: Optional[List[str]] = None,
+                 dynamic_columns: Optional[List[Dict[str, Any]]] = None,
+                 dynamic_table: Optional[str] = None):
         """
         Args:
             schema: Dict mapping table names to TableDefinition objects (from plugin_loader)
@@ -68,6 +71,8 @@ class SchemaContext:
             allowed_columns: Set of allowed column names
             plugin_name: Name of the active plugin
             metrics_description: Human-readable metrics description
+            dynamic_columns: Column profiles for dynamic datasets [{name, data_type, description, ...}]
+            dynamic_table: The dynamic table name (e.g. "ds_abc123def456")
         """
         self.schema = schema
         self.allowed_tables = allowed_tables
@@ -75,12 +80,31 @@ class SchemaContext:
         self.plugin_name = plugin_name
         self.metrics_description = metrics_description
         self.views = views or []
+        self.dynamic_columns = dynamic_columns
+        self.dynamic_table = dynamic_table
     
     def to_prompt_string(self) -> str:
         """
         Converts schema to a human-readable format for the LLM prompt.
-        Includes column meanings and allowed operations.
+        For dynamic datasets, includes full column details.
+        For static (plugin) datasets, uses compiled metric views.
         """
+        # Dynamic dataset: provide explicit table + column schema
+        if self.dynamic_table is not None and self.dynamic_columns is not None:
+            schema_text = f"## Database Schema\n\n"
+            schema_text += f"Table: `{self.dynamic_table}`\n"
+            schema_text += "Columns:\n"
+            for col in self.dynamic_columns:
+                name = col.get("column_name", col.get("name", ""))
+                dtype = col.get("data_type", col.get("type", "TEXT"))
+                desc = col.get("description", "")
+                desc_str = f" — {desc}" if desc else ""
+                schema_text += f"  - `{name}` ({dtype}){desc_str}\n"
+            schema_text += f"\nIMPORTANT: Only use the table `{self.dynamic_table}` in your SQL.\n"
+            schema_text += "Do NOT add WHERE clauses for dataset_id; the system handles filtering.\n"
+            return schema_text
+
+        # Static (plugin) dataset: use compiled metric views
         schema_text = f"## {self.plugin_name.upper()} Metric Views\n\n"
         for view in sorted(self.views):
             schema_text += f"- View: `{view}` (use this; do NOT use base tables)\n"

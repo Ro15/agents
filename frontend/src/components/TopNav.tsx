@@ -37,24 +37,6 @@ export const TopNav: React.FC = () => {
           <NavLink to="/insights" className={navItemClass}>
             Insights
           </NavLink>
-          <NavLink to="/history" className={navItemClass}>
-            History
-          </NavLink>
-          <NavLink to="/dashboards" className={navItemClass}>
-            Boards
-          </NavLink>
-          <NavLink to="/connectors" className={navItemClass}>
-            Connectors
-          </NavLink>
-          <NavLink to="/schedules" className={navItemClass}>
-            Schedules
-          </NavLink>
-          <NavLink to="/catalog" className={navItemClass}>
-            Catalog
-          </NavLink>
-          <NavLink to="/usage" className={navItemClass}>
-            Usage
-          </NavLink>
         </div>
         <div className="hidden sm:block">
           <Button variant="secondary" onClick={() => window.open(`${API_BASE}/docs`, "_blank")}>

@@ -2,6 +2,7 @@
 Application entry point.
 Registers routers, configures middleware, runs startup initialization.
 """
+from __future__ import annotations
 
 import os
 import logging
@@ -31,11 +32,30 @@ logger = logging.getLogger(__name__)
 INSIGHT_ENGINES: dict[str, InsightEngine] = {}
 
 
+def _run_migrations(eng):
+    """Add columns to existing tables that were created before the model was updated."""
+    migrations = [
+        ("datasets", "table_name",   "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS table_name VARCHAR"),
+        ("datasets", "schema_type",  "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS schema_type VARCHAR DEFAULT 'static'"),
+        ("datasets", "file_path",    "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS file_path VARCHAR"),
+        ("datasets", "file_format",  "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS file_format VARCHAR"),
+        ("datasets", "column_count", "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS column_count INTEGER"),
+    ]
+    with eng.begin() as conn:
+        for table, col, ddl in migrations:
+            try:
+                conn.execute(text(ddl))
+                logger.info(f"Migration: ensured {table}.{col} exists")
+            except Exception as e:
+                logger.debug(f"Migration skip {table}.{col}: {e}")
+
+
 def create_db_and_tables():
     try:
         logger.info("Connecting to database to create tables...")
         Base.metadata.create_all(bind=engine)
-        logger.info("Tables created successfully.")
+        _run_migrations(engine)
+        logger.info("Tables created/migrated successfully.")
 
         plugins_dir = os.path.join(os.path.dirname(__file__), "..", "..", "plugins")
         nl_to_sql.initialize_plugins(plugins_dir)

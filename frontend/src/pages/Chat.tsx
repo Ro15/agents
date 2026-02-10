@@ -264,22 +264,6 @@ export const ChatPage: React.FC = () => {
             </Button>
           </div>
 
-          <Card title="Navigation">
-            <div className="flex flex-col gap-1 text-sm">
-              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/history")}>
-                Query History
-              </button>
-              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/dashboards")}>
-                My Dashboards
-              </button>
-              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/connectors")}>
-                Data Connectors
-              </button>
-              <button className="text-left text-brand-blue hover:underline" onClick={() => navigate("/schedules")}>
-                Scheduled Reports
-              </button>
-            </div>
-          </Card>
         </div>
 
         <div className="space-y-4">

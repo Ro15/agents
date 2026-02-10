@@ -1,0 +1,14 @@
+[
+  {"employee_id": "EMP-001", "name": "Alice Johnson", "department": "Engineering", "title": "Senior Developer", "salary": 125000, "hire_date": "2021-03-15", "is_active": true, "performance_score": 4.5},
+  {"employee_id": "EMP-002", "name": "Bob Smith", "department": "Marketing", "title": "Marketing Manager", "salary": 95000, "hire_date": "2020-07-01", "is_active": true, "performance_score": 4.2},
+  {"employee_id": "EMP-003", "name": "Carol White", "department": "Engineering", "title": "Junior Developer", "salary": 75000, "hire_date": "2023-01-10", "is_active": true, "performance_score": 3.8},
+  {"employee_id": "EMP-004", "name": "David Brown", "department": "Sales", "title": "Sales Rep", "salary": 65000, "hire_date": "2022-05-20", "is_active": true, "performance_score": 4.0},
+  {"employee_id": "EMP-005", "name": "Eve Davis", "department": "Engineering", "title": "Tech Lead", "salary": 145000, "hire_date": "2019-11-01", "is_active": true, "performance_score": 4.8},
+  {"employee_id": "EMP-006", "name": "Frank Miller", "department": "HR", "title": "HR Specialist", "salary": 70000, "hire_date": "2021-08-15", "is_active": true, "performance_score": 3.5},
+  {"employee_id": "EMP-007", "name": "Grace Lee", "department": "Sales", "title": "Sales Manager", "salary": 110000, "hire_date": "2020-02-01", "is_active": true, "performance_score": 4.3},
+  {"employee_id": "EMP-008", "name": "Henry Wilson", "department": "Engineering", "title": "DevOps Engineer", "salary": 115000, "hire_date": "2022-09-01", "is_active": true, "performance_score": 4.1},
+  {"employee_id": "EMP-009", "name": "Ivy Chen", "department": "Marketing", "title": "Content Writer", "salary": 60000, "hire_date": "2023-06-15", "is_active": true, "performance_score": 3.9},
+  {"employee_id": "EMP-010", "name": "Jack Taylor", "department": "Engineering", "title": "Senior Developer", "salary": 130000, "hire_date": "2020-01-15", "is_active": false, "performance_score": 3.2},
+  {"employee_id": "EMP-011", "name": "Karen Adams", "department": "Finance", "title": "Financial Analyst", "salary": 85000, "hire_date": "2021-04-01", "is_active": true, "performance_score": 4.4},
+  {"employee_id": "EMP-012", "name": "Leo Martinez", "department": "Sales", "title": "Sales Rep", "salary": 62000, "hire_date": "2023-03-20", "is_active": true, "performance_score": 3.7}
+]

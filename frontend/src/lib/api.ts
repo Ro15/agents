@@ -77,7 +77,24 @@ export async function uploadSalesSync(plugin: string, file: File, datasetName?: 
   return request<DatasetMeta>("/upload/sales", { method: "POST", body: form, headers: { "x-plugin": plugin } });
 }
 
-// ── Upload (async) ───────────────────────────────────────────────
+// ── Universal Upload (flexible schema) ──────────────────────────
+import type { UploadResult, ConnectorSyncResult, RemoteTablesResult, RemoteSchemaResult } from "../types";
+
+export async function uploadUniversal(
+  file: File,
+  pluginId: string = "default",
+  datasetName?: string,
+  sheetName?: string,
+): Promise<UploadResult> {
+  const form = new FormData();
+  form.append("file", file);
+  let qs = `?plugin_id=${encodeURIComponent(pluginId)}`;
+  if (datasetName) qs += `&dataset_name=${encodeURIComponent(datasetName)}`;
+  if (sheetName) qs += `&sheet_name=${encodeURIComponent(sheetName)}`;
+  return request<UploadResult>(`/upload${qs}`, { method: "POST", body: form });
+}
+
+// ── Upload (async – legacy) ──────────────────────────────────────
 export async function uploadSalesAsync(plugin: string, file: File, datasetName?: string): Promise<{ job_id: string }> {
   const form = new FormData();
   form.append("file", file);
@@ -88,17 +105,35 @@ export async function uploadSalesAsync(plugin: string, file: File, datasetName?:
 
 // ── Auto upload with fallback ────────────────────────────────────
 export async function uploadSalesAuto(plugin: string, file: File, datasetName?: string): Promise<{ asyncUsed: boolean; job_id?: string; dataset?: DatasetMeta }> {
+  // Prefer universal upload, fall back to legacy
   try {
-    const asyncRes = await uploadSalesAsync(plugin, file, datasetName);
-    return { asyncUsed: true, job_id: asyncRes.job_id };
-  } catch (err: any) {
-    if (err instanceof ApiError && (err.status === 404 || err.status === 400)) {
-      const syncRes = await uploadSalesSync(plugin, file, datasetName);
-      return { asyncUsed: false, dataset: syncRes };
-    }
-    throw err;
+    const res = await uploadUniversal(file, plugin, datasetName);
+    return { asyncUsed: false, dataset: res };
+  } catch {
+    const syncRes = await uploadSalesSync(plugin, file, datasetName);
+    return { asyncUsed: false, dataset: syncRes };
   }
 }
+
+// ── Connector remote browsing ────────────────────────────────────
+export const getConnectorTables = (connectorId: string) =>
+  request<RemoteTablesResult>(`/connectors/${connectorId}/tables`);
+
+export const getConnectorSchema = (connectorId: string, tableName: string) =>
+  request<RemoteSchemaResult>(`/connectors/${connectorId}/schema/${encodeURIComponent(tableName)}`);
+
+export const syncConnectorTable = (
+  connectorId: string,
+  tableName?: string,
+  pluginId?: string,
+  limit?: number,
+) => {
+  let qs = "?";
+  if (tableName) qs += `table_name=${encodeURIComponent(tableName)}&`;
+  if (pluginId) qs += `plugin_id=${encodeURIComponent(pluginId)}&`;
+  if (limit) qs += `limit=${limit}&`;
+  return request<ConnectorSyncResult>(`/connectors/${connectorId}/sync${qs.replace(/&$/, "")}`, { method: "POST" });
+};
 
 // ── Chat (with multi-turn support) ──────────────────────────────
 export const chat = (
