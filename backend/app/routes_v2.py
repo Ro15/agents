@@ -618,21 +618,22 @@ def profile_dataset(dataset_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Dataset not found")
     db.query(ColumnProfile).filter(ColumnProfile.dataset_id == ds_uuid).delete()
     try:
-        col_rows = db.execute(text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'sales_transactions' ORDER BY ordinal_position")).fetchall()
+        col_rows = db.execute(text(f"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :tname ORDER BY ordinal_position"), {"tname": ds.table_name}).fetchall()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read schema: {e}")
+    table = ds.table_name
     profiles = []
     for col_name, data_type in col_rows:
         if col_name == "id":
             continue
         try:
-            stats = db.execute(text(f'SELECT COUNT(*) FILTER (WHERE "{col_name}" IS NULL), COUNT(DISTINCT "{col_name}"), MIN("{col_name}"::text), MAX("{col_name}"::text) FROM sales_transactions WHERE dataset_id = :dsid'), {"dsid": ds_uuid}).fetchone()
+            stats = db.execute(text(f'SELECT COUNT(*) FILTER (WHERE "{col_name}" IS NULL), COUNT(DISTINCT "{col_name}"), MIN("{col_name}"::text), MAX("{col_name}"::text) FROM "{table}" WHERE dataset_id = :dsid'), {"dsid": ds_uuid}).fetchone()
             mean_val = None
             if data_type in ("numeric", "integer", "bigint", "double precision", "real"):
-                mr = db.execute(text(f'SELECT AVG("{col_name}") FROM sales_transactions WHERE dataset_id = :dsid'), {"dsid": ds_uuid}).fetchone()
+                mr = db.execute(text(f'SELECT AVG("{col_name}") FROM "{table}" WHERE dataset_id = :dsid'), {"dsid": ds_uuid}).fetchone()
                 if mr and mr[0] is not None:
                     mean_val = float(mr[0])
-            sr = db.execute(text(f'SELECT DISTINCT "{col_name}"::text FROM sales_transactions WHERE dataset_id = :dsid AND "{col_name}" IS NOT NULL LIMIT 5'), {"dsid": ds_uuid}).fetchall()
+            sr = db.execute(text(f'SELECT DISTINCT "{col_name}"::text FROM "{table}" WHERE dataset_id = :dsid AND "{col_name}" IS NOT NULL LIMIT 5'), {"dsid": ds_uuid}).fetchall()
             p = ColumnProfile(dataset_id=ds_uuid, column_name=col_name, data_type=data_type, null_count=int(stats[0]) if stats else None, distinct_count=int(stats[1]) if stats else None, min_value=str(stats[2]) if stats and stats[2] is not None else None, max_value=str(stats[3]) if stats and stats[3] is not None else None, mean_value=mean_val, sample_values=[r[0] for r in sr] if sr else [])
             db.add(p); profiles.append(p)
         except Exception as e:

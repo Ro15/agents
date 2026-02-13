@@ -100,9 +100,10 @@ export const InsightsPage: React.FC = () => {
   useEffect(() => {
     if (datasetId) loadLatest();
     else setInsights([]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePlugin, datasetId]);
 
-  const handleRun = async (windowKey?: string, windowLabel?: string) => {
+  const handleRun = async (_windowKey?: string, windowLabel?: string) => {
     if (!datasetId) return;
     setRunning(true);
     try {

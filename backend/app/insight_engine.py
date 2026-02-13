@@ -153,11 +153,12 @@ class InsightEngine:
 
                 # Replace placeholders
                 sql = self._prepare_sql(sql_template)
-                sql = nl_to_sql.SQL_GUARD.enforce_dataset_filter(sql, "dataset_id")
+                if nl_to_sql.SQL_GUARD is not None:
+                    sql = nl_to_sql.SQL_GUARD.enforce_dataset_filter(sql, "dataset_id")
                 executed_sql[query_id] = sql
                 
                 # Execute query
-                conn = db.connection()
+                conn = db.get_bind().connect()
                 conn.execute(text("SET statement_timeout = '5s';"))
                 result = conn.execute(text(sql), {"dataset_id": dataset_id}).mappings().all()
                 
@@ -168,8 +169,8 @@ class InsightEngine:
                 
             except Exception as e:
                 logger.error(f"Error executing query '{query_id}': {e}")
-                return {}, []
-        
+                return {}, {}
+
         return results, executed_sql
     
     def _prepare_sql(self, sql_template: str) -> str:
@@ -458,6 +459,10 @@ class InsightEngine:
                 flat[key] = value
         return flat
 
+    def to_dict(self, insight: GeneratedInsight) -> Dict[str, Any]:
+        """Converts insight to dictionary."""
+        return asdict(insight)
+
 
 def generate_insight_narration(insight_structured: Dict[str, Any], plugin_context: Optional[str] = None) -> Dict[str, str]:
     """
@@ -470,7 +475,3 @@ def generate_insight_narration(insight_structured: Dict[str, Any], plugin_contex
     if plugin_context:
         details = f"[{plugin_context}] {details}"
     return {"summary": summary, "details": details}
-    
-    def to_dict(self, insight: GeneratedInsight) -> Dict[str, Any]:
-        """Converts insight to dictionary."""
-        return asdict(insight)

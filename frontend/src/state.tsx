@@ -130,7 +130,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       upsertDatasetForPlugin,
       deleteDatasetForPlugin,
     }),
-    [activePlugin, activeDataset, activeDatasetId, datasetListsByPlugin, setActiveDataset]
+    [activePlugin, activeDataset, activeDatasetId, datasetListsByPlugin, setActiveDataset, setActivePlugin, setDatasetListForPlugin, upsertDatasetForPlugin, deleteDatasetForPlugin]
   );
 
   useEffect(() => {

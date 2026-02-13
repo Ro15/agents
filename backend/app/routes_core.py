@@ -471,7 +471,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             r"DATE\('(\d{4}-\d{2}-\d{2})'\s*-\s*INTERVAL\s*'(\d+\s+day[s]?)'\)",
             r"(DATE '\1' - INTERVAL '\2')", scoped_sql, flags=re.IGNORECASE,
         )
-        conn = db.connection()
+        conn = db.get_bind().connect()
         conn.execute(text("SET statement_timeout = '5s';"))
 
         params = {} if is_dynamic else {"dataset_id": ds.dataset_id}

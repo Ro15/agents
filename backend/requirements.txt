@@ -4,7 +4,8 @@ sqlalchemy
 psycopg2-binary
 python-dotenv
 pandas
-openai==0.28.1
+openai>=1.0.0
+numpy
 # Gemini (Google Generative AI) client
 google-generativeai==0.8.3
 pytest

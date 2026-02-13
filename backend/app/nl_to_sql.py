@@ -49,8 +49,8 @@ def fix_date_literal_intervals(sql: str) -> str:
     Rewrites to (DATE 'YYYY-MM-DD' - INTERVAL '1 day').
     """
     import re
-    pattern = r"DATE\\('([0-9]{4}-[0-9]{2}-[0-9]{2})'\\s*-\\s*INTERVAL\\s*'([0-9]+\\s+day[s]?)'\\)"
-    return re.sub(pattern, r"(DATE '\\1' - INTERVAL '\\2')", sql, flags=re.IGNORECASE)
+    pattern = r"DATE\('(\d{4}-\d{2}-\d{2})'\s*-\s*INTERVAL\s*'(\d+\s+day[s]?)'\)"
+    return re.sub(pattern, r"(DATE '\1' - INTERVAL '\2')", sql, flags=re.IGNORECASE)
 
 
 def clamp_date_range(sql: str, time_column: Optional[str], max_days: Optional[int]) -> str:
@@ -291,6 +291,7 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
         chart_hint=response.chart_hint if response else "none",
         summary=response.summary if response else "",
     )
+    result.cache_info = cache_info
     if sql:
         cache_set(
             "llm_sql",
@@ -305,5 +306,4 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
             },
             LLM_SQL_CACHE_TTL_SECONDS,
         )
-        result.cache_info = cache_info
     return result

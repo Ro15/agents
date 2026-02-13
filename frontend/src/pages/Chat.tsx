@@ -393,7 +393,10 @@ export const ChatPage: React.FC = () => {
                     <ul className="list-disc space-y-1 pl-4 text-sm text-slate-700">
                       {suggestions.map((s) => (
                         <li key={s}>
-                          <button className="text-brand-blue hover:underline" onClick={() => sendMessage(s)}>
+                          <button className="text-brand-blue hover:underline" onClick={() => {
+                            if (autoSend) sendMessage(s);
+                            else setInput(s);
+                          }}>
                             {s}
                           </button>
                         </li>

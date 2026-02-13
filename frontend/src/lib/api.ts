@@ -18,6 +18,10 @@ import type {
   ColumnProfileInfo,
   UsageCosts,
   RateLimitStatus,
+  UploadResult,
+  ConnectorSyncResult,
+  RemoteTablesResult,
+  RemoteSchemaResult,
 } from "../types";
 
 export class ApiError extends Error {
@@ -78,8 +82,6 @@ export async function uploadSalesSync(plugin: string, file: File, datasetName?: 
 }
 
 // ── Universal Upload (flexible schema) ──────────────────────────
-import type { UploadResult, ConnectorSyncResult, RemoteTablesResult, RemoteSchemaResult } from "../types";
-
 export async function uploadUniversal(
   file: File,
   pluginId: string = "default",
@@ -94,13 +96,10 @@ export async function uploadUniversal(
   return request<UploadResult>(`/upload${qs}`, { method: "POST", body: form });
 }
 
-// ── Upload (async – legacy) ──────────────────────────────────────
+// ── Upload (async – uses universal endpoint) ──────────────────────────────────
 export async function uploadSalesAsync(plugin: string, file: File, datasetName?: string): Promise<{ job_id: string }> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("plugin_id", plugin);
-  if (datasetName) form.append("dataset_name", datasetName);
-  return request<{ job_id: string }>("/upload/sales/async", { method: "POST", body: form });
+  const res = await uploadUniversal(file, plugin, datasetName);
+  return { job_id: (res as any).job_id || (res as any).dataset_id || "" };
 }
 
 // ── Auto upload with fallback ────────────────────────────────────

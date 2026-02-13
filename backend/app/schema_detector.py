@@ -152,7 +152,7 @@ def detect_schema(df: pd.DataFrame) -> List[ColumnSchema]:
             name=col_name,
             pg_type=pg_type,
             pandas_dtype=str(series.dtype),
-            nullable=null_count > 0 or True,
+            nullable=null_count > 0,
             sample_values=samples,
             distinct_count=distinct_count,
             null_count=null_count,
