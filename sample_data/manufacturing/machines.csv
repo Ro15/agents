@@ -1,0 +1,6 @@
+line_id,machine_name,facility,machine_type,install_date,max_capacity_per_hour,status
+L1,AutoAssembler-3000,plant1,assembly,2022-03-15,50,active
+L2,MoldMaster-X,plant1,molding,2021-07-20,40,active
+L3,PackBot-200,plant2,packaging,2023-01-10,80,active
+L4,WeldPro-500,plant2,assembly,2020-11-05,35,maintenance
+L5,CastLine-100,plant1,molding,2024-06-01,45,active

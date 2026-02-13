@@ -1,0 +1,6 @@
+store_id,store_name,region,city,state,store_size_sqft,opened_date
+STR-1,Downtown Main,North,New York,NY,5000,2020-01-15
+STR-2,West Mall,West,Los Angeles,CA,8000,2019-06-20
+STR-3,South Plaza,South,Miami,FL,3500,2021-03-10
+STR-4,East Center,East,Boston,MA,4200,2022-09-01
+STR-5,Central Hub,North,Chicago,IL,6000,2018-11-05

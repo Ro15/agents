@@ -1,0 +1,7 @@
+customer_id,customer_name,segment,signup_date,region
+RC001,John Doe,premium,2024-05-10,North
+RC002,Jane Smith,regular,2025-01-15,West
+RC003,Mike Johnson,wholesale,2023-11-20,South
+RC004,Emily Brown,premium,2025-03-08,East
+RC005,Chris Davis,regular,2025-08-22,North
+RC006,Pat Wilson,wholesale,2024-07-14,West

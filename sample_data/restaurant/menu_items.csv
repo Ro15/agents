@@ -1,0 +1,13 @@
+item_name,category,base_price,cost_to_make,is_vegetarian,is_seasonal
+Pizza,Entree,12.50,4.20,false,false
+Pasta,Entree,11.00,3.50,true,false
+Caesar Salad,Appetizer,8.50,2.80,true,false
+Garlic Bread,Appetizer,5.00,1.20,true,false
+Steak,Entree,24.00,10.50,false,false
+Grilled Salmon,Entree,19.00,8.00,false,false
+Tiramisu,Dessert,7.50,2.50,true,false
+Cheesecake,Dessert,8.00,3.00,true,false
+Lemonade,Drink,3.50,0.80,true,true
+Iced Tea,Drink,3.00,0.60,true,false
+Mushroom Risotto,Entree,14.00,4.80,true,true
+Bruschetta,Appetizer,7.00,2.00,true,false

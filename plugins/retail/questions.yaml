@@ -66,3 +66,42 @@ question_packs:
         required_metrics: ["transaction_count"]
         constraints:
           min_confidence: "high"
+
+  multi_table_analysis:
+    description: "Questions that span multiple tables using JOINs"
+    patterns:
+      - pattern: "brand.*sales|revenue.*by.*brand|brand.*performance"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "products"]
+
+      - pattern: "supplier.*revenue|supplier.*performance"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "products"]
+
+      - pattern: "store.*city|sales.*by.*city|city.*revenue"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "stores"]
+
+      - pattern: "customer.*segment.*spend|premium.*customer|wholesale.*customer"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "customers"]
+
+      - pattern: "profit.*margin|unit.*cost.*vs.*price"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "products"]
+
+      - pattern: "store.*size.*sales|sqft.*performance"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "stores"]

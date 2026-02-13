@@ -58,12 +58,14 @@ class LLMConfig:
 
 class SchemaContext:
     """Encapsulates database schema information for LLM prompting."""
-    
-    def __init__(self, schema: Dict[str, Any], allowed_tables: set, allowed_columns: set, 
+
+    def __init__(self, schema: Dict[str, Any], allowed_tables: set, allowed_columns: set,
                  plugin_name: str = "", metrics_description: str = "",
                  views: Optional[List[str]] = None,
                  dynamic_columns: Optional[List[Dict[str, Any]]] = None,
-                 dynamic_table: Optional[str] = None):
+                 dynamic_table: Optional[str] = None,
+                 relationships_description: str = "",
+                 schema_description: str = ""):
         """
         Args:
             schema: Dict mapping table names to TableDefinition objects (from plugin_loader)
@@ -73,6 +75,8 @@ class SchemaContext:
             metrics_description: Human-readable metrics description
             dynamic_columns: Column profiles for dynamic datasets [{name, data_type, description, ...}]
             dynamic_table: The dynamic table name (e.g. "ds_abc123def456")
+            relationships_description: Human-readable table relationships for JOIN guidance
+            schema_description: Full human-readable schema description (all tables + columns)
         """
         self.schema = schema
         self.allowed_tables = allowed_tables
@@ -82,12 +86,14 @@ class SchemaContext:
         self.views = views or []
         self.dynamic_columns = dynamic_columns
         self.dynamic_table = dynamic_table
-    
+        self.relationships_description = relationships_description
+        self.schema_description = schema_description
+
     def to_prompt_string(self) -> str:
         """
         Converts schema to a human-readable format for the LLM prompt.
         For dynamic datasets, includes full column details.
-        For static (plugin) datasets, uses compiled metric views.
+        For static (plugin) datasets, includes metric views, full table schemas, and relationships.
         """
         # Dynamic dataset: provide explicit table + column schema
         if self.dynamic_table is not None and self.dynamic_columns is not None:
@@ -104,12 +110,28 @@ class SchemaContext:
             schema_text += "Do NOT add WHERE clauses for dataset_id; the system handles filtering.\n"
             return schema_text
 
-        # Static (plugin) dataset: use compiled metric views
-        schema_text = f"## {self.plugin_name.upper()} Metric Views\n\n"
-        for view in sorted(self.views):
-            schema_text += f"- View: `{view}` (use this; do NOT use base tables)\n"
+        # Static (plugin) dataset
+        schema_text = ""
+
+        # Include full table schema so the LLM knows all tables and columns for JOINs
+        if self.schema_description:
+            schema_text += self.schema_description + "\n"
+
+        # Include metric views
+        if self.views:
+            schema_text += f"## {self.plugin_name.upper()} Metric Views\n\n"
+            schema_text += "For simple metric queries, prefer these pre-built views:\n"
+            for view in sorted(self.views):
+                schema_text += f"- View: `{view}`\n"
+            schema_text += "\n"
+
         if self.metrics_description:
-            schema_text += "\n# Metric descriptions\n" + self.metrics_description
+            schema_text += "# Metric descriptions\n" + self.metrics_description + "\n"
+
+        # Include relationship info for multi-table JOINs
+        if self.relationships_description:
+            schema_text += "\n" + self.relationships_description + "\n"
+
         schema_text += "\nRemember: do NOT filter dataset_id; system injects it."
         return schema_text
 
@@ -260,8 +282,17 @@ IMPORTANT RULES:
 - summary: a short human-friendly explanation of what the data means.
 7. Do NOT include dataset_id filters; the system injects them automatically.
 
+MULTI-TABLE JOIN RULES:
+- When the question involves data from multiple tables, use JOINs to combine them.
+- Use the relationships defined in the schema to determine the correct JOIN conditions.
+- Prefer LEFT JOIN when the relationship is many_to_one (to preserve all rows from the main table).
+- Use INNER JOIN when both sides must match (e.g., one_to_many lookups).
+- Always qualify column names with table names or aliases when using JOINs to avoid ambiguity.
+- For simple single-table metric queries, prefer the pre-built metric views if available.
+
 ALLOWED OPERATIONS:
-- SELECT, FROM, WHERE, GROUP BY, ORDER BY, LIMIT, JOIN, UNION
+- SELECT, FROM, WHERE, GROUP BY, ORDER BY, LIMIT, OFFSET
+- JOINs: INNER JOIN, LEFT JOIN, RIGHT JOIN, FULL OUTER JOIN, CROSS JOIN
 - Aggregation functions: SUM, COUNT, AVG, MIN, MAX
 - Date functions: DATE(), EXTRACT(), CURRENT_DATE, INTERVAL
 - String functions: UPPER, LOWER, CONCAT, SUBSTRING
