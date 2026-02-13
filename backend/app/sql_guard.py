@@ -32,7 +32,8 @@ class SQLGuard:
         'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER', 'ON', 'USING',
         'UNION', 'INTERSECT', 'EXCEPT', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
         'AND', 'OR', 'NOT', 'IN', 'EXISTS', 'BETWEEN', 'LIKE', 'IS', 'NULL',
-        'DISTINCT', 'AS', 'WITH', 'RECURSIVE', 'HAVING', 'CROSS'
+        'DISTINCT', 'AS', 'WITH', 'RECURSIVE', 'HAVING', 'CROSS',
+        'ASC', 'DESC', 'TRUE', 'FALSE',
     }
     
     # Allowed aggregate functions
@@ -102,15 +103,42 @@ class SQLGuard:
             if re.search(pattern, sql_upper):
                 raise SQLGuardError(f"Query contains forbidden keyword: {keyword}")
     
+    @staticmethod
+    def _extract_table_aliases(sql: str) -> set:
+        """Extract table aliases from FROM and JOIN clauses.
+
+        Matches patterns like:
+          FROM table_name alias
+          FROM table_name AS alias
+          JOIN table_name alias ON ...
+          JOIN table_name AS alias ON ...
+        """
+        aliases = set()
+        # Pattern: FROM/JOIN table_name [AS] alias
+        pattern = r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)(?:\s+AS)?\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        for match in re.finditer(pattern, sql, flags=re.IGNORECASE):
+            candidate = match.group(2).upper()
+            # Only treat as alias if it's not a SQL keyword (ON, WHERE, etc.)
+            if candidate not in {'ON', 'WHERE', 'GROUP', 'ORDER', 'LIMIT', 'INNER',
+                                 'LEFT', 'RIGHT', 'FULL', 'OUTER', 'CROSS', 'JOIN',
+                                 'SET', 'AS', 'USING', 'HAVING', 'UNION', 'NATURAL'}:
+                aliases.add(match.group(2).lower())
+        return aliases
+
     def _check_schema_allowlist(self, sql: str) -> None:
         """Checks that query only references allowed tables and columns."""
         # Extract identifiers (table/column names)
         # This regex matches quoted and unquoted identifiers
         identifiers = set(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', sql.lower()))
-        # remove aliases (anything following AS)
+
+        # Remove column/expression aliases (anything following AS)
         alias_matches = re.findall(r'\bas\s+([a-zA-Z_][a-zA-Z0-9_]*)', sql, flags=re.IGNORECASE)
         alias_matches += re.findall(r'\)\s+([a-zA-Z_][a-zA-Z0-9_]*)', sql)  # function aliases without AS
         identifiers = identifiers - {a.lower() for a in alias_matches}
+
+        # Remove table aliases from FROM/JOIN clauses (e.g. "FROM orders s" -> 's' is an alias)
+        table_aliases = self._extract_table_aliases(sql)
+        identifiers = identifiers - table_aliases
 
         # Remove SQL keywords from identifiers
         keywords = self.ALLOWED_KEYWORDS | self.FORBIDDEN_KEYWORDS | self.ALLOWED_FUNCTIONS

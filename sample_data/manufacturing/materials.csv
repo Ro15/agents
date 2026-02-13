@@ -1,0 +1,7 @@
+material_id,material_name,supplier,unit_cost,unit_of_measure,lead_time_days
+MAT01,Steel Sheet,SteelCo,25.00,kg,5
+MAT02,Aluminum Rod,AlumWorks,18.00,kg,3
+MAT03,Plastic Pellets,PolyChem,8.50,kg,2
+MAT04,Copper Wire,MetalSupply,32.00,kg,7
+MAT05,Rubber Gasket,SealMasters,2.50,pieces,4
+MAT06,Paint Coating,ColorTech,12.00,liters,3

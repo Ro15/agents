@@ -1,0 +1,7 @@
+sku,product_name,category,subcategory,brand,unit_cost,supplier,weight_kg
+SKU-1,Widget,CatA,Sub1,BrandX,5.00,SupplierAlpha,0.5
+SKU-2,Gadget,CatB,Sub2,BrandY,8.00,SupplierBeta,1.2
+SKU-3,Doohickey,CatA,Sub1,BrandX,3.50,SupplierAlpha,0.3
+SKU-4,Thingamajig,CatC,Sub3,BrandZ,12.00,SupplierGamma,2.0
+SKU-5,Whatchamacallit,CatB,Sub2,BrandY,6.50,SupplierBeta,0.8
+SKU-6,Gizmo,CatA,Sub1,BrandX,4.00,SupplierAlpha,0.4

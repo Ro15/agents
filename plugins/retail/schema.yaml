@@ -45,7 +45,7 @@ tables:
         nullable: true
       store_id:
         type: "string"
-        meaning: "Identifier for the store location"
+        meaning: "Foreign key to the stores table"
         nullable: true
       region:
         type: "string"
@@ -55,3 +55,124 @@ tables:
         type: "string"
         meaning: "Payment method used (cash, card, online)"
         nullable: true
+      customer_id:
+        type: "string"
+        meaning: "Foreign key to the customers table"
+        nullable: true
+
+  products:
+    description: "Product catalog with detailed attributes"
+    columns:
+      sku:
+        type: "string"
+        meaning: "Stock Keeping Unit - unique product identifier"
+        nullable: false
+      product_name:
+        type: "string"
+        meaning: "Name of the product"
+        nullable: false
+      category:
+        type: "string"
+        meaning: "Product category"
+        nullable: false
+      subcategory:
+        type: "string"
+        meaning: "Product subcategory"
+        nullable: true
+      brand:
+        type: "string"
+        meaning: "Brand or manufacturer name"
+        nullable: true
+      unit_cost:
+        type: "numeric"
+        meaning: "Wholesale cost per unit"
+        nullable: true
+      supplier:
+        type: "string"
+        meaning: "Name of the supplier"
+        nullable: true
+      weight_kg:
+        type: "numeric"
+        meaning: "Product weight in kilograms"
+        nullable: true
+
+  stores:
+    description: "Store locations and metadata"
+    columns:
+      store_id:
+        type: "string"
+        meaning: "Unique store identifier"
+        nullable: false
+      store_name:
+        type: "string"
+        meaning: "Name of the store"
+        nullable: false
+      region:
+        type: "string"
+        meaning: "Geographic region"
+        nullable: false
+      city:
+        type: "string"
+        meaning: "City where the store is located"
+        nullable: true
+      state:
+        type: "string"
+        meaning: "State or province"
+        nullable: true
+      store_size_sqft:
+        type: "numeric"
+        meaning: "Floor area in square feet"
+        nullable: true
+      opened_date:
+        type: "date"
+        meaning: "Date the store was opened"
+        nullable: true
+
+  customers:
+    description: "Customer records for segmentation and retention"
+    columns:
+      customer_id:
+        type: "string"
+        meaning: "Unique customer identifier"
+        nullable: false
+      customer_name:
+        type: "string"
+        meaning: "Full name of the customer"
+        nullable: false
+      segment:
+        type: "string"
+        meaning: "Customer segment (regular, premium, wholesale)"
+        nullable: true
+      signup_date:
+        type: "date"
+        meaning: "Date the customer registered"
+        nullable: true
+      region:
+        type: "string"
+        meaning: "Home region of the customer"
+        nullable: true
+
+relationships:
+  - name: "sales_to_product"
+    from_table: "sales_transactions"
+    from_column: "sku"
+    to_table: "products"
+    to_column: "sku"
+    type: "many_to_one"
+    description: "Each sale references a product by SKU"
+
+  - name: "sales_to_store"
+    from_table: "sales_transactions"
+    from_column: "store_id"
+    to_table: "stores"
+    to_column: "store_id"
+    type: "many_to_one"
+    description: "Each sale occurs at a store"
+
+  - name: "sales_to_customer"
+    from_table: "sales_transactions"
+    from_column: "customer_id"
+    to_table: "customers"
+    to_column: "customer_id"
+    type: "many_to_one"
+    description: "Each sale may be linked to a customer"

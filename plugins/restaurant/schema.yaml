@@ -43,3 +43,112 @@ tables:
         type: "numeric"
         meaning: "Tax amount for this line item"
         nullable: true
+      customer_id:
+        type: "string"
+        meaning: "Foreign key to the customers table"
+        nullable: true
+      server_id:
+        type: "string"
+        meaning: "Foreign key to the staff table (server who took the order)"
+        nullable: true
+
+  menu_items:
+    description: "Menu item catalog with pricing and cost info"
+    columns:
+      item_name:
+        type: "string"
+        meaning: "Name of the menu item (matches item_name in sales_transactions)"
+        nullable: false
+      category:
+        type: "string"
+        meaning: "Category the item belongs to (appetizers, mains, desserts, drinks)"
+        nullable: false
+      base_price:
+        type: "numeric"
+        meaning: "Standard menu price"
+        nullable: false
+      cost_to_make:
+        type: "numeric"
+        meaning: "Cost of ingredients to prepare the item"
+        nullable: true
+      is_vegetarian:
+        type: "boolean"
+        meaning: "Whether the item is vegetarian"
+        nullable: true
+      is_seasonal:
+        type: "boolean"
+        meaning: "Whether the item is only available seasonally"
+        nullable: true
+
+  customers:
+    description: "Customer records for loyalty and segmentation"
+    columns:
+      customer_id:
+        type: "string"
+        meaning: "Unique customer identifier"
+        nullable: false
+      customer_name:
+        type: "string"
+        meaning: "Full name of the customer"
+        nullable: false
+      loyalty_tier:
+        type: "string"
+        meaning: "Loyalty tier (bronze, silver, gold, platinum)"
+        nullable: true
+      signup_date:
+        type: "date"
+        meaning: "Date the customer joined the loyalty program"
+        nullable: true
+      total_visits:
+        type: "numeric"
+        meaning: "Lifetime visit count"
+        nullable: true
+
+  staff:
+    description: "Restaurant staff members"
+    columns:
+      staff_id:
+        type: "string"
+        meaning: "Unique staff identifier"
+        nullable: false
+      staff_name:
+        type: "string"
+        meaning: "Full name of the staff member"
+        nullable: false
+      role:
+        type: "string"
+        meaning: "Job role (server, chef, manager, host)"
+        nullable: false
+      hire_date:
+        type: "date"
+        meaning: "Date the staff member was hired"
+        nullable: true
+      hourly_rate:
+        type: "numeric"
+        meaning: "Hourly pay rate"
+        nullable: true
+
+relationships:
+  - name: "sales_to_menu"
+    from_table: "sales_transactions"
+    from_column: "item_name"
+    to_table: "menu_items"
+    to_column: "item_name"
+    type: "many_to_one"
+    description: "Each sale references a menu item"
+
+  - name: "sales_to_customer"
+    from_table: "sales_transactions"
+    from_column: "customer_id"
+    to_table: "customers"
+    to_column: "customer_id"
+    type: "many_to_one"
+    description: "Each sale may be linked to a customer"
+
+  - name: "sales_to_staff"
+    from_table: "sales_transactions"
+    from_column: "server_id"
+    to_table: "staff"
+    to_column: "staff_id"
+    type: "many_to_one"
+    description: "Each sale is handled by a staff member (server)"

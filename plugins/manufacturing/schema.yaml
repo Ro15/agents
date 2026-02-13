@@ -13,7 +13,7 @@ tables:
         nullable: false
       product_id:
         type: "string"
-        meaning: "Identifier for the product being manufactured"
+        meaning: "Foreign key to the products table"
         nullable: false
       product_name:
         type: "string"
@@ -21,7 +21,7 @@ tables:
         nullable: false
       line_id:
         type: "string"
-        meaning: "Production line identifier"
+        meaning: "Foreign key to the machines table (production line)"
         nullable: false
       units_produced:
         type: "numeric"
@@ -55,3 +55,117 @@ tables:
         type: "string"
         meaning: "Manufacturing facility identifier"
         nullable: true
+
+  quality_checks:
+    description: "Quality inspection records for production runs"
+    primary_time_column: "check_date"
+    columns:
+      check_id:
+        type: "string"
+        meaning: "Unique identifier for the quality check"
+        nullable: false
+      run_id:
+        type: "string"
+        meaning: "Foreign key to the production_runs table"
+        nullable: false
+      check_date:
+        type: "timestamp"
+        meaning: "Date and time of the quality check"
+        nullable: false
+      inspector_id:
+        type: "string"
+        meaning: "Identifier of the inspector who performed the check"
+        nullable: true
+      check_type:
+        type: "string"
+        meaning: "Type of quality check (visual, dimensional, functional)"
+        nullable: false
+      pass_fail:
+        type: "string"
+        meaning: "Result of the check (pass or fail)"
+        nullable: false
+      defect_category:
+        type: "string"
+        meaning: "Category of defect if failed (cosmetic, structural, functional)"
+        nullable: true
+      notes:
+        type: "string"
+        meaning: "Inspector notes or observations"
+        nullable: true
+
+  machines:
+    description: "Manufacturing equipment and production lines"
+    columns:
+      line_id:
+        type: "string"
+        meaning: "Unique production line identifier"
+        nullable: false
+      machine_name:
+        type: "string"
+        meaning: "Name or model of the machine"
+        nullable: false
+      facility:
+        type: "string"
+        meaning: "Facility where the machine is located"
+        nullable: false
+      machine_type:
+        type: "string"
+        meaning: "Type of machine (assembly, molding, packaging)"
+        nullable: true
+      install_date:
+        type: "date"
+        meaning: "Date the machine was installed"
+        nullable: true
+      max_capacity_per_hour:
+        type: "numeric"
+        meaning: "Maximum production capacity per hour"
+        nullable: true
+      status:
+        type: "string"
+        meaning: "Current status (active, maintenance, retired)"
+        nullable: true
+
+  materials:
+    description: "Raw materials inventory and suppliers"
+    columns:
+      material_id:
+        type: "string"
+        meaning: "Unique material identifier"
+        nullable: false
+      material_name:
+        type: "string"
+        meaning: "Name of the raw material"
+        nullable: false
+      supplier:
+        type: "string"
+        meaning: "Supplier name"
+        nullable: true
+      unit_cost:
+        type: "numeric"
+        meaning: "Cost per unit of material"
+        nullable: true
+      unit_of_measure:
+        type: "string"
+        meaning: "Unit of measurement (kg, liters, pieces)"
+        nullable: true
+      lead_time_days:
+        type: "numeric"
+        meaning: "Average delivery lead time in days"
+        nullable: true
+
+relationships:
+  - name: "runs_to_quality"
+    from_table: "production_runs"
+    from_column: "run_id"
+    to_table: "quality_checks"
+    to_column: "run_id"
+    type: "one_to_many"
+    description: "Each production run can have multiple quality checks"
+
+  - name: "runs_to_machine"
+    from_table: "production_runs"
+    from_column: "line_id"
+    to_table: "machines"
+    to_column: "line_id"
+    type: "many_to_one"
+    description: "Each production run uses a specific machine/line"

@@ -62,6 +62,18 @@ class QuestionPack:
 
 
 @dataclass
+class RelationshipDefinition:
+    """Represents a foreign key relationship between two tables."""
+    name: str
+    from_table: str
+    from_column: str
+    to_table: str
+    to_column: str
+    relationship_type: str  # "many_to_one", "one_to_many", "one_to_one"
+    description: str = ""
+
+
+@dataclass
 class PolicyConfig:
     """Represents security and behavior policies."""
     allowed_question_types: List[str]
@@ -101,6 +113,7 @@ class PluginConfig:
         self.config_dir = Path(config_dir) / plugin_name
         
         self.schema: Dict[str, TableDefinition] = {}
+        self.relationships: List[RelationshipDefinition] = []
         self.metrics: Dict[str, MetricDefinition] = {}
         self.question_packs: Dict[str, QuestionPack] = {}
         self.policy: PolicyConfig = None
@@ -169,13 +182,13 @@ class PluginConfig:
         self.validation_errors = []
     
     def _load_schema(self, schema_file: Path):
-        """Loads schema configuration."""
+        """Loads schema configuration including table relationships."""
         with open(schema_file, 'r') as f:
             schema_data = yaml.safe_load(f)
-        
+
         if not schema_data or 'tables' not in schema_data:
             raise ValueError("schema.yaml must contain 'tables' key")
-        
+
         for table_name, table_data in schema_data['tables'].items():
             columns = {}
             for col_name, col_data in table_data.get('columns', {}).items():
@@ -185,15 +198,28 @@ class PluginConfig:
                     meaning=col_data.get('meaning', ''),
                     nullable=col_data.get('nullable', True)
                 )
-            
+
             self.schema[table_name] = TableDefinition(
                 name=table_name,
                 columns=columns,
                 primary_time_column=table_data.get('primary_time_column'),
                 description=table_data.get('description', '')
             )
-        
-        logger.info(f"Loaded schema with {len(self.schema)} tables")
+
+        # Load relationships
+        self.relationships = []
+        for rel_data in schema_data.get('relationships', []):
+            self.relationships.append(RelationshipDefinition(
+                name=rel_data.get('name', ''),
+                from_table=rel_data.get('from_table', ''),
+                from_column=rel_data.get('from_column', ''),
+                to_table=rel_data.get('to_table', ''),
+                to_column=rel_data.get('to_column', ''),
+                relationship_type=rel_data.get('type', 'many_to_one'),
+                description=rel_data.get('description', ''),
+            ))
+
+        logger.info(f"Loaded schema with {len(self.schema)} tables and {len(self.relationships)} relationships")
     
     def _load_metrics(self, metrics_file: Path):
         """Loads metrics configuration."""
@@ -284,22 +310,41 @@ class PluginConfig:
     def get_schema_description(self) -> str:
         """Returns human-readable schema description for LLM prompts."""
         description = f"# {self.plugin_name.upper()} Schema\n\n"
-        
+
         for table_name, table in self.schema.items():
             description += f"## Table: `{table_name}`\n"
             if table.description:
                 description += f"{table.description}\n\n"
-            
+
             description += "### Columns:\n"
             for col_name, col in table.columns.items():
                 description += f"- `{col_name}` ({col.type}): {col.meaning}\n"
-            
+
             if table.primary_time_column:
                 description += f"\n**Primary Time Column**: `{table.primary_time_column}`\n"
-            
+
             description += "\n"
-        
+
+        if self.relationships:
+            description += self.get_relationships_description()
+
         return description
+
+    def get_relationships_description(self) -> str:
+        """Returns human-readable relationship descriptions for LLM prompts."""
+        if not self.relationships:
+            return ""
+
+        desc = "# Table Relationships (use JOINs when the question spans multiple tables)\n\n"
+        for rel in self.relationships:
+            join_type = "LEFT JOIN" if rel.relationship_type == "many_to_one" else "JOIN"
+            desc += (
+                f"- `{rel.from_table}`.`{rel.from_column}` -> "
+                f"`{rel.to_table}`.`{rel.to_column}` "
+                f"({rel.relationship_type}): {rel.description}\n"
+                f"  Example: `{join_type} {rel.to_table} ON {rel.from_table}.{rel.from_column} = {rel.to_table}.{rel.to_column}`\n"
+            )
+        return desc
     
     def get_metrics_description(self) -> str:
         """Returns human-readable metrics description for LLM prompts."""
@@ -335,6 +380,7 @@ class PluginConfig:
         return {
             "plugin_name": self.plugin_name,
             "tables": list(self.schema.keys()),
+            "relationships": [asdict(r) for r in self.relationships],
             "metrics": list(self.metrics.keys()),
             "question_packs": list(self.question_packs.keys()),
             "policy": asdict(self.policy) if self.policy else {}

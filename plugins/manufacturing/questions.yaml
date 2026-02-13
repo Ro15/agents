@@ -61,3 +61,42 @@ question_packs:
         required_metrics: ["total_production_cost"]
         constraints:
           min_confidence: "medium"
+
+  multi_table_analysis:
+    description: "Questions that span multiple tables using JOINs"
+    patterns:
+      - pattern: "quality.*check.*result|inspection.*result|pass.*fail.*rate"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["production_runs", "quality_checks"]
+
+      - pattern: "machine.*defect|line.*quality|machine.*type.*defect"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["production_runs", "quality_checks", "machines"]
+
+      - pattern: "machine.*capacity|utilization|capacity.*usage"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["production_runs", "machines"]
+
+      - pattern: "machine.*maintenance|machine.*status|active.*machine"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["machines"]
+
+      - pattern: "defect.*category|cosmetic.*defect|structural.*defect|functional.*defect"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["quality_checks"]
+
+      - pattern: "inspector.*performance|inspector.*pass.*rate"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["quality_checks"]

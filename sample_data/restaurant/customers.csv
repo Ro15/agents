@@ -1,0 +1,9 @@
+customer_id,customer_name,loyalty_tier,signup_date,total_visits
+C001,Alice Johnson,gold,2025-03-15,42
+C002,Bob Smith,silver,2025-06-20,18
+C003,Carol White,platinum,2024-11-01,85
+C004,Dave Brown,bronze,2025-09-10,7
+C005,Eve Davis,gold,2025-01-22,35
+C006,Frank Miller,silver,2025-07-05,14
+C007,Grace Lee,bronze,2026-01-02,3
+C008,Hank Wilson,gold,2025-04-18,28

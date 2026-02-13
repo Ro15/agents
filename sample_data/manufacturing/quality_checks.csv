@@ -1,0 +1,9 @@
+check_id,run_id,check_date,inspector_id,check_type,pass_fail,defect_category,notes
+QC001,m1,2026-01-09T10:00:00Z,INS01,visual,pass,,All units passed visual inspection
+QC002,m1,2026-01-09T11:00:00Z,INS02,dimensional,pass,,Within tolerance
+QC003,m2,2026-01-10T10:00:00Z,INS01,visual,fail,cosmetic,Surface scratches on 3 units
+QC004,m2,2026-01-10T11:30:00Z,INS03,functional,pass,,Functional tests passed
+QC005,m3,2026-01-11T09:00:00Z,INS02,visual,pass,,Clean batch
+QC006,m3,2026-01-11T10:30:00Z,INS01,dimensional,fail,structural,2 units out of spec
+QC007,m4,2026-01-12T09:00:00Z,INS03,functional,fail,functional,Motor test failure
+QC008,m5,2026-01-13T08:30:00Z,INS02,visual,pass,,No defects found

@@ -202,6 +202,8 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
         plugin_name=ACTIVE_PLUGIN.plugin_name,
         metrics_description=ACTIVE_PLUGIN.get_metrics_description(),
         views=getattr(ACTIVE_PLUGIN, "compiled_views", []),
+        relationships_description=ACTIVE_PLUGIN.get_relationships_description(),
+        schema_description=ACTIVE_PLUGIN.get_schema_description(),
     )
 
     config = LLMConfig()

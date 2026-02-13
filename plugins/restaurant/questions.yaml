@@ -42,3 +42,36 @@ question_packs:
         required_metrics: ["order_count"]
         constraints:
           min_confidence: "high"
+
+  multi_table_analysis:
+    description: "Questions that span multiple tables using JOINs"
+    patterns:
+      - pattern: "profit.*margin|cost.*to.*make|food.*cost"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "menu_items"]
+
+      - pattern: "vegetarian.*sales|vegetarian.*revenue"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "menu_items"]
+
+      - pattern: "loyalty.*tier.*spend|customer.*tier|gold.*customer|platinum.*customer"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "customers"]
+
+      - pattern: "server.*performance|staff.*sales|waiter.*revenue"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "staff"]
+
+      - pattern: "top.*customer|biggest.*spender|customer.*revenue"
+        required_metrics: []
+        constraints:
+          min_confidence: "medium"
+          tables: ["sales_transactions", "customers"]
