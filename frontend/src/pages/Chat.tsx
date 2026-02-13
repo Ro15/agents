@@ -216,6 +216,31 @@ export const ChatPage: React.FC = () => {
     }
 
     // Text / fallback
+    if (Array.isArray(resp.answer)) {
+      const objectRows = resp.answer.filter((r) => r && typeof r === "object");
+      if (objectRows.length === resp.answer.length && objectRows.length > 0) {
+        return (
+          <div className="space-y-2">
+            {resp.narrative && <p className="text-sm text-slate-700 italic">{resp.narrative}</p>}
+            {!resp.narrative && resp.summary && <p className="text-sm text-slate-700">{resp.summary}</p>}
+            <DataTable rows={objectRows as Record<string, unknown>[]} />
+          </div>
+        );
+      }
+    }
+
+    if (resp.answer && typeof resp.answer === "object") {
+      return (
+        <div>
+          <pre className="max-h-80 overflow-auto rounded-md bg-slate-50 p-3 text-xs text-slate-700">
+            {JSON.stringify(resp.answer, null, 2)}
+          </pre>
+          {resp.narrative && <p className="mt-1 text-sm text-slate-700 italic">{resp.narrative}</p>}
+          {!resp.narrative && resp.summary && <p className="mt-1 text-xs text-slate-500">{resp.summary}</p>}
+        </div>
+      );
+    }
+
     return (
       <div>
         <p className="text-sm text-slate-800 whitespace-pre-wrap">{resp.answer}</p>

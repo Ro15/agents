@@ -368,6 +368,14 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
     generated_sql = None
 
     try:
+        def _row_to_dict(row) -> dict:
+            if isinstance(row, dict):
+                return row
+            mapping = getattr(row, "_mapping", None)
+            if mapping is not None:
+                return dict(mapping)
+            return dict(row)
+
         active_plugin = ensure_active_plugin(chat_query.plugin)
         dataset_id = chat_query.dataset_id
         ds = get_dataset_or_400(db, dataset_id, active_plugin.plugin_name)
@@ -480,7 +488,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 return {"type": "scalar", "value": _serialize_val(payload.get("value")), "row_count": payload.get("row_count", 1)}
             if payload.get("type") == "table":
                 rows = payload.get("rows", [])
-                return {"type": "table", "rows": [{k: _serialize_val(v) for k, v in dict(r).items()} for r in rows], "row_count": payload.get("row_count", len(rows))}
+                return {"type": "table", "rows": [{k: _serialize_val(v) for k, v in _row_to_dict(r).items()} for r in rows], "row_count": payload.get("row_count", len(rows))}
             return payload
 
         cached = cache_get("db_result", db_key)
@@ -494,12 +502,18 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             else:
                 result_payload = {
                     "type": "table",
-                    "rows": [{k: _serialize_val(v) for k, v in dict(r).items()} for r in rows],
+                    "rows": [{k: _serialize_val(v) for k, v in _row_to_dict(r).items()} for r in rows],
                     "row_count": len(rows),
                 }
             cache_set("db_result", db_key, _serialize_payload(result_payload), DB_RESULT_CACHE_TTL_SECONDS)
 
-        answer_type = generation.answer_type or ("number" if result_payload["type"] == "scalar" else "table")
+        derived_answer_type = "number" if result_payload["type"] == "scalar" else "table"
+        answer_type = generation.answer_type or derived_answer_type
+        # Keep response shape consistent with executed SQL payload.
+        if result_payload["type"] == "table" and answer_type != "table":
+            answer_type = "table"
+        elif result_payload["type"] == "scalar" and answer_type == "table":
+            answer_type = "number"
         if result_payload["type"] == "scalar":
             val = result_payload["value"]
             answer = 0 if val is None else val

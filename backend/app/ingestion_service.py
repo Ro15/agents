@@ -117,10 +117,7 @@ def run_ingestion_pipeline(
     # 3. Load data
     load_result = load_dataframe(engine, tbl_name, df)
 
-    # 4. Save column profiles
-    save_column_profiles(db, ds_id, col_schemas)
-
-    # 5. Register dataset
+    # 4. Register dataset first so FK-dependent rows can reference it.
     ds_obj = register_dataset(
         db,
         dataset_id=ds_id,
@@ -133,6 +130,10 @@ def run_ingestion_pipeline(
         file_path=file_path,
         file_format=file_format,
     )
+    db.flush()
+
+    # 5. Save column profiles
+    save_column_profiles(db, ds_id, col_schemas)
 
     # 6. Ingestion run record
     db.add(IngestionRun(

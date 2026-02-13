@@ -85,6 +85,30 @@ def _safe_str(val: Any) -> Optional[str]:
     return str(val)
 
 
+def _safe_min_max(non_null: pd.Series, pg_type: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Compute min/max safely for profiling.
+    Mixed object columns (e.g. strings + ints from Excel) can raise TypeError
+    on direct comparisons, so text-like fields are compared as strings.
+    """
+    if len(non_null) == 0:
+        return None, None
+
+    try:
+        if pg_type in {"BIGINT", "INTEGER", "SMALLINT", "DOUBLE PRECISION", "REAL", "NUMERIC", "TIMESTAMP", "TIMESTAMPTZ", "BOOLEAN", "INTERVAL"}:
+            return _safe_str(non_null.min()), _safe_str(non_null.max())
+
+        text_values = non_null.astype(str)
+        return _safe_str(text_values.min()), _safe_str(text_values.max())
+    except TypeError:
+        # Fallback for mixed, non-orderable Python objects.
+        text_values = non_null.astype(str)
+        return _safe_str(text_values.min()), _safe_str(text_values.max())
+    except Exception:
+        logger.debug("Could not compute min/max for column %s", non_null.name, exc_info=True)
+        return None, None
+
+
 def detect_schema(df: pd.DataFrame) -> List[ColumnSchema]:
     """
     Inspect a DataFrame and return column definitions with profiling stats.
@@ -116,8 +140,7 @@ def detect_schema(df: pd.DataFrame) -> List[ColumnSchema]:
         distinct_count = int(non_null.nunique()) if len(non_null) > 0 else 0
         samples = [str(v) for v in non_null.head(5).tolist()]
 
-        min_val = _safe_str(non_null.min()) if len(non_null) > 0 else None
-        max_val = _safe_str(non_null.max()) if len(non_null) > 0 else None
+        min_val, max_val = _safe_min_max(non_null, pg_type)
         mean_val = None
         if pg_type in ("BIGINT", "INTEGER", "SMALLINT", "DOUBLE PRECISION", "REAL", "NUMERIC"):
             try:
