@@ -1,0 +1,2 @@
+{"question":"total revenue last 7 days","plugin":"retail","dataset_id":"00000000-0000-0000-0000-000000000000","expected_answer_type":"number","sql_must_contain":["select"],"sql_must_not_contain":["delete","drop","update","insert"]}
+{"question":"top 5 items by revenue","plugin":"restaurant","dataset_id":"00000000-0000-0000-0000-000000000000","expected_answer_type":"table","sql_must_contain":["order by"],"sql_must_not_contain":["delete","drop","update","insert"]}

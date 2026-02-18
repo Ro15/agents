@@ -177,9 +177,72 @@ class PluginConfig:
 
     def _validate(self):
         """Run structural validations; record errors but do not raise."""
-        # Dev-mode: skip strict validation so sample plugins always load.
-        self.validated = True
-        self.validation_errors = []
+        errors: List[str] = []
+
+        if not self.schema:
+            errors.append("schema.yaml must define at least one table")
+
+        known_tables = set(self.schema.keys())
+        known_columns: Dict[str, set] = {}
+        for table_name, table in self.schema.items():
+            if not table.columns:
+                errors.append(f"schema: table '{table_name}' must define at least one column")
+                continue
+            known_columns[table_name] = set(table.columns.keys())
+
+        for rel in self.relationships:
+            if rel.from_table not in known_tables:
+                errors.append(f"relationship '{rel.name}': unknown from_table '{rel.from_table}'")
+                continue
+            if rel.to_table not in known_tables:
+                errors.append(f"relationship '{rel.name}': unknown to_table '{rel.to_table}'")
+                continue
+            if rel.from_column not in known_columns.get(rel.from_table, set()):
+                errors.append(
+                    f"relationship '{rel.name}': unknown from_column '{rel.from_table}.{rel.from_column}'"
+                )
+            if rel.to_column not in known_columns.get(rel.to_table, set()):
+                errors.append(
+                    f"relationship '{rel.name}': unknown to_column '{rel.to_table}.{rel.to_column}'"
+                )
+            if rel.relationship_type not in {"many_to_one", "one_to_many", "one_to_one"}:
+                errors.append(f"relationship '{rel.name}': invalid type '{rel.relationship_type}'")
+
+        if self.policy:
+            if not isinstance(self.policy.allowed_question_types, list):
+                errors.append("policy.allowed_question_types must be a list")
+            if not isinstance(self.policy.forbidden_topics, list):
+                errors.append("policy.forbidden_topics must be a list")
+
+        for metric_name, metric in self.metrics.items():
+            sql_template = (metric.sql_template or "").strip()
+            if not sql_template:
+                errors.append(f"metric '{metric_name}': sql_template is required")
+                continue
+
+            render_table = next(iter(known_tables), "missing_table")
+            rendered = re.sub(r"\{[^}]+\}", render_table, sql_template)
+            if not rendered.lower().lstrip().startswith("select"):
+                errors.append(f"metric '{metric_name}': SQL must start with SELECT")
+                continue
+
+            metric_tables = self._extract_tables_from_sql(rendered)
+            unknown_metric_tables = sorted(t for t in metric_tables if t not in known_tables)
+            if unknown_metric_tables:
+                errors.append(
+                    f"metric '{metric_name}': references unknown table(s): {', '.join(unknown_metric_tables)}"
+                )
+
+        self.validation_errors = errors
+        self.validated = len(errors) == 0
+
+    @staticmethod
+    def _extract_tables_from_sql(sql: str) -> Set[str]:
+        """Best-effort table extractor from FROM/JOIN clauses."""
+        tables: Set[str] = set()
+        for match in re.finditer(r"(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", sql, flags=re.IGNORECASE):
+            tables.add(match.group(1))
+        return tables
     
     def _load_schema(self, schema_file: Path):
         """Loads schema configuration including table relationships."""

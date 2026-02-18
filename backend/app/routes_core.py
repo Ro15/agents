@@ -41,6 +41,7 @@ from app.helpers import (
     update_job_status,
 )
 from app.llm_service import SchemaContext, LLMConfig, generate_sql_with_llm, generate_narrative
+from app.sql_guard import SQLGuard, SQLGuardError
 from app.routes_v2 import check_rate_limit, log_llm_cost, record_query_history, save_conversation_message, get_conversation_history
 from cache.cache import stable_hash, cache_get, cache_set, DB_RESULT_CACHE_TTL_SECONDS
 
@@ -55,6 +56,54 @@ INSIGHT_ENGINES: dict[str, InsightEngine] = {}
 from app.file_storage import save_file as archive_file
 from app.parsers import parse_file, SUPPORTED_EXTENSIONS
 from app.ingestion_service import run_ingestion_pipeline
+
+_NUM_PATTERN = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+
+def _extract_numbers(text_value: str) -> list[float]:
+    vals: list[float] = []
+    if not text_value:
+        return vals
+    for tok in _NUM_PATTERN.findall(text_value):
+        try:
+            vals.append(float(tok.replace(",", "")))
+        except Exception:
+            continue
+    return vals
+
+
+def _answer_numbers(answer, answer_type: str, max_vals: int = 200) -> list[float]:
+    vals: list[float] = []
+    if answer_type == "number":
+        try:
+            return [float(answer)]
+        except Exception:
+            return []
+    if answer_type != "table" or not isinstance(answer, list):
+        return []
+    for row in answer:
+        if not isinstance(row, dict):
+            continue
+        for v in row.values():
+            if isinstance(v, (int, float)) and len(vals) < max_vals:
+                vals.append(float(v))
+            if len(vals) >= max_vals:
+                return vals
+    return vals
+
+
+def _narrative_supported_by_answer(narrative: str, answer, answer_type: str) -> bool:
+    narrative_nums = _extract_numbers(narrative)
+    if not narrative_nums:
+        return True
+    answer_nums = _answer_numbers(answer, answer_type)
+    if not answer_nums:
+        return False
+    for n in narrative_nums:
+        matched = any(abs(n - a) <= max(1e-6, abs(a) * 0.01) for a in answer_nums)
+        if not matched:
+            return False
+    return True
 
 
 # ── Dependencies ────────────────────────────────────────────────────────
@@ -398,87 +447,41 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             cached_response = maybe_answer_with_cached_insights(chat_query.query, active_plugin.plugin_name, dataset_id, db, last_updated)
             if cached_response:
                 return cached_response
-
-        # Generate SQL — dynamic vs static path
+        dynamic_context = None
+        dynamic_guard = None
+        dynamic_time_column = None
         if is_dynamic:
-            # Build schema context from column_profiles
             col_profiles = db.query(ColumnProfile).filter(
                 ColumnProfile.dataset_id == ds.dataset_id
             ).order_by(ColumnProfile.column_name).all()
+            if not col_profiles:
+                raise HTTPException(status_code=400, detail="Dynamic dataset schema profile is missing. Re-upload data and retry.")
             dynamic_cols = [
-                {"column_name": cp.column_name, "data_type": cp.data_type,
-                 "description": cp.description or ""}
+                {"column_name": cp.column_name, "data_type": cp.data_type, "description": cp.description or ""}
                 for cp in col_profiles
             ]
             dyn_table = ds.table_name
-            schema_ctx = SchemaContext(
-                schema={}, allowed_tables={dyn_table},
-                allowed_columns={cp.column_name for cp in col_profiles},
+            if not dyn_table:
+                raise HTTPException(status_code=400, detail="Dynamic dataset table is missing.")
+
+            allowed_cols = {cp.column_name for cp in col_profiles}
+            dynamic_context = SchemaContext(
+                schema={},
+                allowed_tables={dyn_table},
+                allowed_columns=allowed_cols,
                 plugin_name=active_plugin.plugin_name,
                 dynamic_columns=dynamic_cols,
                 dynamic_table=dyn_table,
             )
-            config = LLMConfig()
-            today_iso = datetime.utcnow().date().isoformat()
-            llm_resp = generate_sql_with_llm(
-                chat_query.query, schema_ctx, config,
-                today_iso=today_iso,
-                conversation_history=conversation_history,
+            dynamic_guard = SQLGuard(
+                {dyn_table.lower()},
+                {c.lower() for c in allowed_cols},
             )
-            if llm_resp is None:
-                raise ValueError("LLM failed to generate SQL for this question")
-            generation = nl_to_sql.SQLGenerationResult(
-                sql=llm_resp.sql, answer_type=llm_resp.answer_type,
-                assumptions=llm_resp.assumptions or [], confidence="high",
-                intent="analytics_query", repairs=0,
-                model_name=llm_resp.model_name, failure_reason=None,
-                cache_info={"llm_cache_hit": False},
-                chart_hint=llm_resp.chart_hint, summary=llm_resp.summary,
-            )
-        else:
-            generation = nl_to_sql.generate_sql(
-                chat_query.query, dataset_id=str(ds.dataset_id),
-                dataset_version=dataset_version, conversation_history=conversation_history,
-            )
-
-        generated_sql = generation.sql
-
-        if generation.intent != "analytics_query" or not generated_sql:
-            record_audit_log(
-                db, plugin_id=active_plugin.plugin_name, dataset_id=dataset_id,
-                user_question=chat_query.query, intent=generation.intent, generated_sql=None,
-                sql_valid=False, execution_ms=int((time.time() - t0) * 1000),
-                rows_returned=None, confidence=generation.confidence,
-                failure_reason=generation.failure_reason or "unsupported_intent",
-                model_name=generation.model_name,
-            )
-            return {
-                "answer_type": "text",
-                "answer": "I need more context to answer that. Please ask a data question related to the plugin.",
-                "explanation": generation.failure_reason or "Question not supported.",
-                "sql": None, "data_last_updated": last_updated,
-                "confidence": generation.confidence, "plugin": active_plugin.plugin_name,
-                "assumptions": generation.assumptions,
-            }
-
-        # Execute SQL — different scoping for dynamic vs static
-        if is_dynamic:
-            # For dynamic datasets: SQL already targets the dynamic table, no dataset_id filter needed
-            scoped_sql = generated_sql
-        else:
-            scoped_sql = nl_to_sql.SQL_GUARD.enforce_dataset_filter(generated_sql, "dataset_id")
-        scoped_sql = re.sub(
-            r"DATE\('(\d{4}-\d{2}-\d{2})'\s*-\s*INTERVAL\s*'(\d+\s+day[s]?)'\)",
-            r"(DATE '\1' - INTERVAL '\2')", scoped_sql, flags=re.IGNORECASE,
-        )
-        conn = db.get_bind().connect()
-        conn.execute(text("SET statement_timeout = '5s';"))
-
-        params = {} if is_dynamic else {"dataset_id": ds.dataset_id}
-        hash_params = {"dataset_id": str(ds.dataset_id)}
-        sql_norm = scoped_sql.strip().rstrip(";")
-        db_key = stable_hash({"ds": str(ds.dataset_id), "v": dataset_version, "sql": sql_norm, "params": hash_params})
-        db_cache_hit = False
+            for cp in col_profiles:
+                dtype = (cp.data_type or "").lower()
+                if "date" in dtype or "time" in dtype:
+                    dynamic_time_column = cp.column_name
+                    break
 
         def _serialize_val(v):
             return str(v) if isinstance(v, UUID) else v
@@ -491,21 +494,140 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 return {"type": "table", "rows": [{k: _serialize_val(v) for k, v in _row_to_dict(r).items()} for r in rows], "row_count": payload.get("row_count", len(rows))}
             return payload
 
-        cached = cache_get("db_result", db_key)
-        if cached is not None:
-            db_cache_hit = True
-            result_payload = _serialize_payload(cached)
-        else:
-            rows = conn.execute(text(sql_norm), params).fetchall()
-            if len(rows) == 1 and len(rows[0]) == 1:
-                result_payload = {"type": "scalar", "value": _serialize_val(rows[0][0]), "row_count": 1}
-            else:
-                result_payload = {
-                    "type": "table",
-                    "rows": [{k: _serialize_val(v) for k, v in _row_to_dict(r).items()} for r in rows],
-                    "row_count": len(rows),
+        def _generate(feedback: Optional[dict] = None, use_cache: bool = True):
+            if is_dynamic:
+                cfg = LLMConfig()
+                today_iso = datetime.utcnow().date().isoformat()
+                llm_resp = generate_sql_with_llm(
+                    chat_query.query,
+                    dynamic_context,
+                    cfg,
+                    feedback=feedback,
+                    timezone=os.getenv("LLM_TIMEZONE", "UTC"),
+                    today_iso=today_iso,
+                    conversation_history=conversation_history,
+                )
+                if llm_resp is None:
+                    raise ValueError("LLM failed to generate SQL for this question")
+                candidate_sql = nl_to_sql.normalize_sql(
+                    nl_to_sql.clamp_date_range(
+                        nl_to_sql.fix_date_literal_intervals(llm_resp.sql),
+                        dynamic_time_column,
+                        active_plugin.policy.max_date_range_days if active_plugin.policy else None,
+                    )
+                )
+                dynamic_guard.validate(candidate_sql)
+                return nl_to_sql.SQLGenerationResult(
+                    sql=candidate_sql,
+                    answer_type=llm_resp.answer_type,
+                    assumptions=llm_resp.assumptions or [],
+                    confidence="high",
+                    intent="analytics_query",
+                    repairs=0,
+                    model_name=llm_resp.model_name,
+                    failure_reason=None,
+                    cache_info={"llm_cache_hit": False},
+                    chart_hint=llm_resp.chart_hint,
+                    summary=llm_resp.summary,
+                )
+            return nl_to_sql.generate_sql(
+                chat_query.query,
+                dataset_id=str(ds.dataset_id),
+                dataset_version=dataset_version,
+                conversation_history=conversation_history,
+                feedback=feedback,
+                use_cache=use_cache,
+            )
+
+        generation = None
+        scoped_sql = None
+        result_payload = None
+        db_cache_hit = False
+        db_key = ""
+        execution_feedback = None
+        max_exec_attempts = 2
+
+        for exec_attempt in range(max_exec_attempts):
+            try:
+                generation = _generate(feedback=execution_feedback, use_cache=execution_feedback is None)
+                generated_sql = generation.sql
+            except (SQLGuardError, ValueError) as e:
+                logger.warning(f"SQL generation attempt {exec_attempt + 1} failed: {e}")
+                if exec_attempt + 1 >= max_exec_attempts:
+                    raise
+                execution_feedback = {
+                    "error": f"generation_failed: {e}",
+                    "allowed_tables": list(active_plugin.get_allowed_tables()) if not is_dynamic else list(dynamic_context.allowed_tables),
+                    "allowed_columns": list(active_plugin.get_allowed_columns()) if not is_dynamic else list(dynamic_context.allowed_columns),
+                    "time_column": active_plugin.primary_time_column() if not is_dynamic else dynamic_time_column,
                 }
-            cache_set("db_result", db_key, _serialize_payload(result_payload), DB_RESULT_CACHE_TTL_SECONDS)
+                continue
+
+            if generation.intent != "analytics_query" or not generated_sql:
+                record_audit_log(
+                    db, plugin_id=active_plugin.plugin_name, dataset_id=dataset_id,
+                    user_question=chat_query.query, intent=generation.intent, generated_sql=None,
+                    sql_valid=False, execution_ms=int((time.time() - t0) * 1000),
+                    rows_returned=None, confidence=generation.confidence,
+                    failure_reason=generation.failure_reason or "unsupported_intent",
+                    model_name=generation.model_name,
+                )
+                return {
+                    "answer_type": "text",
+                    "answer": "I need more context to answer that. Please ask a data question related to the plugin.",
+                    "explanation": generation.failure_reason or "Question not supported.",
+                    "sql": None, "data_last_updated": last_updated,
+                    "confidence": generation.confidence, "plugin": active_plugin.plugin_name,
+                    "assumptions": generation.assumptions,
+                }
+
+            try:
+                if is_dynamic:
+                    scoped_sql = generated_sql
+                else:
+                    scoped_sql = nl_to_sql.SQL_GUARD.enforce_dataset_filter(generated_sql, "dataset_id")
+                scoped_sql = re.sub(
+                    r"DATE\('(\d{4}-\d{2}-\d{2})'\s*-\s*INTERVAL\s*'(\d+\s+day[s]?)'\)",
+                    r"(DATE '\1' - INTERVAL '\2')", scoped_sql, flags=re.IGNORECASE,
+                )
+
+                params = {} if is_dynamic else {"dataset_id": ds.dataset_id}
+                hash_params = {} if is_dynamic else {"dataset_id": str(ds.dataset_id)}
+                sql_norm = scoped_sql.strip().rstrip(";")
+                db_key = stable_hash({"ds": str(ds.dataset_id), "v": dataset_version, "sql": sql_norm, "params": hash_params})
+
+                cached = cache_get("db_result", db_key)
+                if cached is not None:
+                    db_cache_hit = True
+                    result_payload = _serialize_payload(cached)
+                    break
+
+                with db.get_bind().connect() as conn:
+                    conn.execute(text("SET statement_timeout = '5s';"))
+                    rows = conn.execute(text(sql_norm), params).fetchall()
+                if len(rows) == 1 and len(rows[0]) == 1:
+                    result_payload = {"type": "scalar", "value": _serialize_val(rows[0][0]), "row_count": 1}
+                else:
+                    result_payload = {
+                        "type": "table",
+                        "rows": [{k: _serialize_val(v) for k, v in _row_to_dict(r).items()} for r in rows],
+                        "row_count": len(rows),
+                    }
+                cache_set("db_result", db_key, _serialize_payload(result_payload), DB_RESULT_CACHE_TTL_SECONDS)
+                break
+            except (SQLGuardError, Exception) as e:
+                logger.warning(f"SQL attempt {exec_attempt + 1} failed: {e}")
+                if exec_attempt + 1 >= max_exec_attempts:
+                    raise
+                execution_feedback = {
+                    "error": f"execution_failed: {e}",
+                    "allowed_tables": list(active_plugin.get_allowed_tables()) if not is_dynamic else list(dynamic_context.allowed_tables),
+                    "allowed_columns": list(active_plugin.get_allowed_columns()) if not is_dynamic else list(dynamic_context.allowed_columns),
+                    "time_column": active_plugin.primary_time_column() if not is_dynamic else dynamic_time_column,
+                }
+
+        if result_payload is None:
+            raise ValueError("SQL execution failed after retries")
 
         derived_answer_type = "number" if result_payload["type"] == "scalar" else "table"
         answer_type = generation.answer_type or derived_answer_type
@@ -559,6 +681,9 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 log_llm_cost(db, active_plugin.plugin_name, cfg.model, input_est, output_est, "/chat/narrative")
         except Exception as e:
             logger.warning(f"Narrative generation skipped: {e}")
+        if narrative and not _narrative_supported_by_answer(narrative, answer, answer_type):
+            logger.warning("Narrative claim-check failed; falling back to deterministic summary.")
+            narrative = ""
 
         # Record query history
         history_id = None

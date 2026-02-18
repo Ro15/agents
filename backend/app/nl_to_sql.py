@@ -6,6 +6,7 @@ using an LLM with plugin-based configuration for sector-agnostic operation.
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List
@@ -30,6 +31,17 @@ def classify_intent(question: str) -> str:
     unsupported_keywords = ["joke", "who are you", "lyrics", "story", "explain plugin", "weather"]
     if any(k in q for k in unsupported_keywords):
         return "unsupported"
+    ambiguous_phrases = {
+        "show me data",
+        "show data",
+        "show me",
+        "how is it",
+        "what about this",
+        "what about that",
+        "tell me more",
+    }
+    if q.strip() in ambiguous_phrases:
+        return "needs_clarification"
     # If no verb-like tokens, ask for clarification
     if len(q.split()) < 3:
         return "needs_clarification"
@@ -160,7 +172,17 @@ def get_active_plugin() -> PluginConfig:
 from cache.cache import cache_get, cache_set, stable_hash, normalize_question, LLM_SQL_CACHE_TTL_SECONDS
 
 
-def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plugin_config_hash: str = "", prompt_version: str = "v2", conversation_history: list = None) -> SQLGenerationResult:
+def generate_sql(
+    query: str,
+    dataset_id: str = "",
+    dataset_version: int = 0,
+    plugin_config_hash: str = "",
+    prompt_version: str = "v2",
+    conversation_history: list = None,
+    feedback: Optional[dict] = None,
+    use_cache: bool = True,
+    timezone: Optional[str] = None,
+) -> SQLGenerationResult:
     """
     Generates SQL from a natural language query using LLM with plugin configuration.
     Implements a two-pass repair loop and validation via SQLGuard.
@@ -209,6 +231,7 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
     config = LLMConfig()
     today_iso = datetime.utcnow().date().isoformat()
 
+    tz = timezone or os.getenv("LLM_TIMEZONE", "UTC")
     cache_info = {"llm_cache_hit": False, "llm_cache_key": None}
     key_obj = {
         "plugin": ACTIVE_PLUGIN.plugin_name,
@@ -220,7 +243,7 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
         "model": config.model,
     }
     cache_key = stable_hash(key_obj)
-    cached = cache_get("llm_sql", cache_key)
+    cached = cache_get("llm_sql", cache_key) if use_cache and feedback is None else None
     if cached:
         cache_info["llm_cache_hit"] = True
         cache_info["llm_cache_key"] = cache_key[:8]
@@ -239,7 +262,7 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
         )
 
     attempts = 0
-    last_error = None
+    last_error = feedback
     response: Optional[LLMResponse] = None
     sql: Optional[str] = None
     while attempts < 2:
@@ -249,7 +272,7 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
             schema_context=schema_context,
             config=config,
             feedback=last_error,
-            timezone="Asia/Kolkata",
+            timezone=tz,
             today_iso=today_iso,
             conversation_history=conversation_history,
         )
@@ -294,7 +317,7 @@ def generate_sql(query: str, dataset_id: str = "", dataset_version: int = 0, plu
         summary=response.summary if response else "",
     )
     result.cache_info = cache_info
-    if sql:
+    if sql and use_cache and feedback is None:
         cache_set(
             "llm_sql",
             cache_key,

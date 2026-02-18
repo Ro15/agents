@@ -11,11 +11,138 @@ import logging
 import re
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
+from urllib import request as urlrequest
+from urllib.error import HTTPError, URLError
 
 import openai  # kept for backward compatibility
 import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_openai_text(response: Any) -> str:
+    """Extract text content from both legacy and v1 OpenAI response shapes."""
+    try:
+        if not response or not getattr(response, "choices", None):
+            return ""
+        msg = response.choices[0].message
+        if isinstance(msg, dict):
+            return (msg.get("content") or "").strip()
+        content = getattr(msg, "content", "")
+        if isinstance(content, list):
+            # Multimodal content blocks; keep text blocks only.
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+            return " ".join([p for p in parts if p]).strip()
+        return (content or "").strip()
+    except Exception:
+        return ""
+
+
+def _openai_major_version() -> int:
+    try:
+        ver = getattr(openai, "__version__", "0")
+        return int(str(ver).split(".", 1)[0])
+    except Exception:
+        return 0
+
+
+def _openai_http_chat_text(
+    config: "LLMConfig",
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    """Direct HTTP fallback for OpenAI-compatible chat completions."""
+    endpoint = config.api_base.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    req = urlrequest.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+    )
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {config.api_key}")
+    timeout = float(os.getenv("LLM_HTTP_TIMEOUT_SECONDS", "30"))
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+        parsed = json.loads(body) if body else {}
+        choices = parsed.get("choices", [])
+        if not choices:
+            raise RuntimeError(f"No choices in response from {endpoint}")
+        msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        return (msg.get("content") or "").strip()
+    except HTTPError as e:
+        details = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {e.code} from {endpoint}: {details[:400]}") from e
+    except URLError as e:
+        raise RuntimeError(f"Network error calling {endpoint}: {e}") from e
+
+
+def _openai_chat_text(
+    config: "LLMConfig",
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    """Call OpenAI-compatible chat endpoint for both SDK generations."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    # openai>=1.x path
+    if getattr(config, "openai_client", None) is not None:
+        resp = config.openai_client.chat.completions.create(
+            model=config.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return _extract_openai_text(resp)
+
+    # For openai>=1 where client init fails (SDK/httpx mismatch), use direct HTTP.
+    if _openai_major_version() >= 1:
+        return _openai_http_chat_text(
+            config,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    # Legacy fallback (openai<1.0)
+    if hasattr(openai, "ChatCompletion"):
+        resp = openai.ChatCompletion.create(
+            model=config.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return _extract_openai_text(resp)
+
+    return _openai_http_chat_text(
+        config,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 class LLMConfig:
@@ -41,15 +168,30 @@ class LLMConfig:
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0"))
         self.max_tokens = int(os.getenv("LLM_MAX_TOKENS", "500"))
         self.available = bool(self.api_key)
+        self.openai_client = None
 
         if not self.available:
             logger.warning("LLM not configured (missing API key); falling back to safe failure.")
             return
 
         if self.provider == "openai":
-            openai.api_key = self.api_key
-            if self.api_base != "https://api.openai.com/v1":
-                openai.api_base = self.api_base
+            # Prefer openai>=1.x client API if available.
+            try:
+                if hasattr(openai, "OpenAI"):
+                    self.openai_client = openai.OpenAI(
+                        api_key=self.api_key,
+                        base_url=self.api_base,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to initialize OpenAI v1 client; falling back to legacy mode: {e}")
+                self.openai_client = None
+
+            if self.openai_client is None:
+                # Legacy mode for older SDK versions.
+                openai.api_key = self.api_key
+                if self.api_base != "https://api.openai.com/v1":
+                    # Older SDK uses api_base; keep backward compatibility.
+                    openai.api_base = self.api_base
         else:
             parsed = urlparse(self.gemini_api_base)
             api_endpoint = parsed.netloc or parsed.path or self.gemini_api_base
@@ -197,16 +339,13 @@ def generate_narrative(
 
     try:
         if config.provider == "openai":
-            response = openai.ChatCompletion.create(
-                model=config.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+            return _openai_chat_text(
+                config,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 temperature=0.3,
                 max_tokens=300,
             )
-            return response.choices[0].message["content"].strip()
         else:
             model_name = config.model
             if not model_name.startswith("models/"):
@@ -329,16 +468,13 @@ Generate a PostgreSQL query to answer this question. Return ONLY a valid JSON ob
         logger.info(f"Calling LLM provider={config.provider} model={config.model} for question: {question}")
 
         if config.provider == "openai":
-            response = openai.ChatCompletion.create(
-                model=config.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
+            response_text = _openai_chat_text(
+                config,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 temperature=config.temperature,
-                max_tokens=config.max_tokens
+                max_tokens=config.max_tokens,
             )
-            response_text = response.choices[0].message['content'].strip()
         else:  # gemini
             model_name = config.model
             if not model_name.startswith("models/"):
