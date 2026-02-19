@@ -125,6 +125,10 @@ class ConversationThread(Base):
     plugin_id = Column(String, index=True)
     dataset_id = Column(String, nullable=True, index=True)
     title = Column(String, nullable=True)
+    is_pinned = Column(Boolean, server_default=text("false"))
+    archived = Column(Boolean, server_default=text("false"))
+    summary = Column(Text, nullable=True)
+    last_message_preview = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP, server_default=text("now()"))
     updated_at = Column(TIMESTAMP, server_default=text("now()"))
 
@@ -137,7 +141,19 @@ class ConversationMessage(Base):
     content = Column(Text)
     sql = Column(Text, nullable=True)
     answer_type = Column(String, nullable=True)
+    payload = Column(JSON_TYPE, nullable=True)
     created_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
+class ConversationMemory(Base):
+    __tablename__ = "conversation_memory"
+    memory_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    thread_id = Column(UUID_TYPE(as_uuid=True), ForeignKey("conversation_threads.thread_id", ondelete="CASCADE"), index=True)
+    memory_type = Column(String, nullable=False, server_default=text("'session_summary'"))
+    content = Column(Text, nullable=False)
+    confidence = Column(String, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
 
 
 # ── Query history & favorites ───────────────────────────────────────────
@@ -270,3 +286,8 @@ class LLMCostLog(Base):
     estimated_cost = Column(NUMERIC, nullable=True)
     endpoint = Column(String, nullable=True)
     created_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
+Index("idx_conversation_threads_updated", ConversationThread.updated_at)
+Index("idx_conversation_threads_plugin_dataset", ConversationThread.plugin_id, ConversationThread.dataset_id)
+Index("idx_conversation_memory_thread_type", ConversationMemory.thread_id, ConversationMemory.memory_type)

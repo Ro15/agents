@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -25,7 +26,7 @@ from app.database import engine, SessionLocal
 from app import nl_to_sql
 from app.insight_engine import InsightEngine
 from app.models import (
-    SalesTransaction, IngestionRun, Dataset, Job, ColumnProfile,
+    SalesTransaction, IngestionRun, Dataset, Job, ColumnProfile, QueryFeedback, ConversationThread,
 )
 from app.helpers import (
     parse_uuid,
@@ -40,9 +41,22 @@ from app.helpers import (
     create_job,
     update_job_status,
 )
-from app.llm_service import SchemaContext, LLMConfig, generate_sql_with_llm, generate_narrative
+from app.llm_service import (
+    SchemaContext,
+    LLMConfig,
+    generate_sql_with_llm,
+    generate_narrative,
+    verify_sql_with_llm,
+)
 from app.sql_guard import SQLGuard, SQLGuardError
-from app.routes_v2 import check_rate_limit, log_llm_cost, record_query_history, save_conversation_message, get_conversation_history
+from app.routes_v2 import (
+    check_rate_limit,
+    log_llm_cost,
+    record_query_history,
+    save_conversation_message,
+    get_conversation_history,
+    get_conversation_memory_context,
+)
 from cache.cache import stable_hash, cache_get, cache_set, DB_RESULT_CACHE_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -104,6 +118,210 @@ def _narrative_supported_by_answer(narrative: str, answer, answer_type: str) -> 
         if not matched:
             return False
     return True
+
+
+def _tokenize_words(text_value: str) -> set[str]:
+    return {t for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_]+", (text_value or "").lower()) if len(t) > 2}
+
+
+def _is_followup_question(question: str) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+    markers = (
+        "and ",
+        "what about",
+        "how about",
+        "same for",
+        "also",
+        "then",
+        "now",
+        "for that",
+        "for this",
+        "compare that",
+    )
+    pronouns = ("it", "that", "those", "them", "this", "same")
+    return q.startswith(markers) or any(re.search(rf"\b{p}\b", q) for p in pronouns)
+
+
+def _resolve_followup_question(question: str, conversation_history: List[dict]) -> str:
+    """
+    Expand short/elliptical follow-ups with the most recent user/assistant context.
+    """
+    q = (question or "").strip()
+    if not q or not conversation_history or not _is_followup_question(q):
+        return q
+    last_user = ""
+    last_assistant = ""
+    for turn in reversed(conversation_history):
+        role = (turn.get("role") or "").lower()
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "assistant" and not last_assistant:
+            last_assistant = content[:600]
+        if role == "user" and not last_user:
+            last_user = content[:600]
+        if last_user and last_assistant:
+            break
+    if not last_user and not last_assistant:
+        return q
+    context_bits = []
+    if last_user:
+        context_bits.append(f"Previous user question: {last_user}")
+    if last_assistant:
+        context_bits.append(f"Previous assistant answer: {last_assistant}")
+    return f"{q}\n\nFollow-up context:\n" + "\n".join(context_bits)
+
+
+def _maybe_clarification_response(
+    question: str,
+    conversation_history: List[dict],
+    plugin_name: str,
+    last_updated,
+):
+    """
+    Clarification gate: ask one clear question instead of guessing on ambiguous prompts.
+    """
+    intent = nl_to_sql.classify_intent(question)
+    if intent == "unsupported":
+        return {
+            "answer_type": "text",
+            "answer": "I can help with data analysis questions only. Please ask about metrics, trends, segments, or comparisons.",
+            "explanation": "unsupported_intent",
+            "sql": None,
+            "data_last_updated": last_updated,
+            "confidence": "low",
+            "plugin": plugin_name,
+            "assumptions": [],
+            "requires_clarification": True,
+        }
+    if intent != "needs_clarification":
+        return None
+    # If there is recent context, allow follow-up resolution to proceed.
+    if conversation_history and len(conversation_history) >= 2:
+        return None
+    return {
+        "answer_type": "text",
+        "answer": (
+            "I can do that. Please add one detail: metric, dimension, and time window.\n"
+            "Example: 'Show total revenue by category for last 30 days.'"
+        ),
+        "explanation": "clarification_required",
+        "sql": None,
+        "data_last_updated": last_updated,
+        "confidence": "low",
+        "plugin": plugin_name,
+        "assumptions": [],
+        "requires_clarification": True,
+    }
+
+
+def _score_column_relevance(question: str, column_name: str, description: str) -> float:
+    q_tokens = _tokenize_words(question)
+    if not q_tokens:
+        return 0.0
+    field = f"{column_name or ''} {description or ''}".lower()
+    score = 0.0
+    for tok in q_tokens:
+        if tok in field:
+            score += 1.0
+    # Prefer common analytical fields
+    if re.search(r"(date|time|day|month|year)", column_name or "", re.I):
+        score += 0.2
+    if re.search(r"(amount|total|count|qty|quantity|price|cost|revenue|sales)", column_name or "", re.I):
+        score += 0.2
+    return score
+
+
+def _select_relevant_dynamic_columns(question: str, col_profiles: list, max_cols: int = 20) -> list:
+    scored = []
+    for cp in col_profiles:
+        score = _score_column_relevance(question, cp.column_name, cp.description or "")
+        scored.append((score, cp))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = [cp for score, cp in scored if score > 0][:max_cols]
+    if not top:
+        top = col_profiles[:max_cols]
+    # Ensure time column is present if available
+    for cp in col_profiles:
+        dt = (cp.data_type or "").lower()
+        if ("date" in dt or "time" in dt) and cp not in top:
+            top.append(cp)
+            break
+    return top[:max_cols]
+
+
+def _build_dynamic_glossary(columns: list, max_entries: int = 25) -> list[dict]:
+    glossary = []
+    for cp in columns:
+        term = (cp.column_name or "").replace("_", " ").strip()
+        meaning = (cp.description or "").strip()
+        if term and meaning:
+            glossary.append({"term": term, "definition": meaning})
+        if len(glossary) >= max_entries:
+            break
+    return glossary
+
+
+def _build_feedback_learning_context(db: Session, plugin_id: str, question: str, limit: int = 5) -> str:
+    """
+    Use prior corrected SQL feedback as learning context for similar questions.
+    """
+    rows = db.query(QueryFeedback).filter(
+        QueryFeedback.plugin_id == plugin_id,
+        QueryFeedback.corrected_sql.isnot(None),
+    ).order_by(QueryFeedback.created_at.desc()).limit(50).all()
+    if not rows:
+        return ""
+    q_tokens = _tokenize_words(question)
+    ranked = []
+    for row in rows:
+        row_tokens = _tokenize_words((row.question or "") + " " + (row.comment or ""))
+        overlap = len(q_tokens.intersection(row_tokens))
+        ranked.append((overlap, row))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    picked = [r for score, r in ranked if score > 0][:limit]
+    if not picked:
+        picked = [r for _, r in ranked[:2]]
+    lines = []
+    for r in picked:
+        lines.append(f"- User asked: {r.question}")
+        if r.original_sql:
+            lines.append(f"  Original SQL: {r.original_sql}")
+        lines.append(f"  Corrected SQL: {r.corrected_sql}")
+        if r.comment:
+            lines.append(f"  Note: {r.comment}")
+    return "\n".join(lines)
+
+
+def _confidence_to_score(conf: str) -> int:
+    return {"low": 1, "medium": 2, "high": 3}.get((conf or "").lower(), 2)
+
+
+def _score_to_confidence(score: int) -> str:
+    if score >= 3:
+        return "high"
+    if score <= 1:
+        return "low"
+    return "medium"
+
+
+def _result_sanity_warnings(question: str, answer_type: str, answer) -> List[str]:
+    warnings: List[str] = []
+    q = (question or "").lower()
+    if answer_type == "table" and isinstance(answer, list) and len(answer) == 0:
+        warnings.append("Query returned no rows for the requested filters.")
+    if answer_type == "number":
+        try:
+            val = float(answer)
+            if math.isnan(val) or math.isinf(val):
+                warnings.append("Result is not a finite numeric value.")
+            if re.search(r"(percent|percentage|rate|ratio)", q) and abs(val) > 1000:
+                warnings.append("Result magnitude is unusually high for a rate/percentage.")
+        except Exception:
+            warnings.append("Numeric answer could not be validated.")
+    return warnings
 
 
 # ── Dependencies ────────────────────────────────────────────────────────
@@ -439,26 +657,88 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 thread_id = UUID(str(chat_query.conversation_id))
                 if not conversation_history:
                     conversation_history = get_conversation_history(db, thread_id)
+                memory_context = get_conversation_memory_context(db, thread_id)
+                if memory_context:
+                    conversation_history = (memory_context + conversation_history)[-16:]
             except Exception:
                 logger.debug(f"Invalid conversation_id: {chat_query.conversation_id}")
+        elif os.getenv("CHAT_AUTO_CREATE_SESSION", "true").lower() in {"1", "true", "yes"}:
+            try:
+                thread = ConversationThread(
+                    plugin_id=active_plugin.plugin_name,
+                    dataset_id=str(ds.dataset_id) if ds else None,
+                    title=(chat_query.query or "").strip()[:60] or "New conversation",
+                )
+                db.add(thread)
+                db.commit()
+                db.refresh(thread)
+                thread_id = thread.thread_id
+            except Exception as e:
+                logger.warning(f"Auto-create conversation thread failed: {e}")
+
+        resolved_query = _resolve_followup_question(chat_query.query, conversation_history)
+        clarification = _maybe_clarification_response(
+            resolved_query, conversation_history, active_plugin.plugin_name, last_updated
+        )
+        if clarification:
+            if thread_id:
+                try:
+                    save_conversation_message(db, thread_id, "user", chat_query.query)
+                    save_conversation_message(
+                        db,
+                        thread_id,
+                        "assistant",
+                        clarification.get("answer") or "",
+                        answer_type="text",
+                        payload=clarification,
+                    )
+                except Exception as e:
+                    logger.warning(f"Conversation persistence failed for clarification path: {e}")
+            clarification["conversation_id"] = str(thread_id) if thread_id else None
+            return clarification
+
+        learning_context = _build_feedback_learning_context(db, active_plugin.plugin_name, resolved_query)
 
         # Try cached insights first (static datasets only)
         if not is_dynamic:
-            cached_response = maybe_answer_with_cached_insights(chat_query.query, active_plugin.plugin_name, dataset_id, db, last_updated)
+            cached_response = maybe_answer_with_cached_insights(resolved_query, active_plugin.plugin_name, dataset_id, db, last_updated)
             if cached_response:
                 return cached_response
         dynamic_context = None
         dynamic_guard = None
         dynamic_time_column = None
+        static_schema_context = None
+        static_glossary = (
+            active_plugin.get_business_glossary()
+            if hasattr(active_plugin, "get_business_glossary")
+            else []
+        )
+        if not is_dynamic:
+            static_schema_context = SchemaContext(
+                active_plugin.schema,
+                active_plugin.get_allowed_tables(),
+                active_plugin.get_allowed_columns(),
+                plugin_name=active_plugin.plugin_name,
+                metrics_description=active_plugin.get_metrics_description(),
+                views=getattr(active_plugin, "compiled_views", []),
+                business_glossary=static_glossary,
+                relationships_description=active_plugin.get_relationships_description(),
+                schema_description=active_plugin.get_schema_description(),
+            )
         if is_dynamic:
             col_profiles = db.query(ColumnProfile).filter(
                 ColumnProfile.dataset_id == ds.dataset_id
             ).order_by(ColumnProfile.column_name).all()
             if not col_profiles:
                 raise HTTPException(status_code=400, detail="Dynamic dataset schema profile is missing. Re-upload data and retry.")
+            selected_profiles = _select_relevant_dynamic_columns(
+                resolved_query,
+                col_profiles,
+                max_cols=int(os.getenv("DYNAMIC_PROMPT_MAX_COLUMNS", "20")),
+            )
             dynamic_cols = [
                 {"column_name": cp.column_name, "data_type": cp.data_type, "description": cp.description or ""}
-                for cp in col_profiles
+                for cp in selected_profiles
             ]
             dyn_table = ds.table_name
             if not dyn_table:
@@ -472,6 +752,8 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 plugin_name=active_plugin.plugin_name,
                 dynamic_columns=dynamic_cols,
                 dynamic_table=dyn_table,
+                focus_columns=[cp.column_name for cp in selected_profiles],
+                business_glossary=_build_dynamic_glossary(selected_profiles),
             )
             dynamic_guard = SQLGuard(
                 {dyn_table.lower()},
@@ -499,10 +781,11 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 cfg = LLMConfig()
                 today_iso = datetime.utcnow().date().isoformat()
                 llm_resp = generate_sql_with_llm(
-                    chat_query.query,
+                    resolved_query,
                     dynamic_context,
                     cfg,
                     feedback=feedback,
+                    extra_context=learning_context,
                     timezone=os.getenv("LLM_TIMEZONE", "UTC"),
                     today_iso=today_iso,
                     conversation_history=conversation_history,
@@ -531,11 +814,13 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     summary=llm_resp.summary,
                 )
             return nl_to_sql.generate_sql(
-                chat_query.query,
+                resolved_query,
                 dataset_id=str(ds.dataset_id),
                 dataset_version=dataset_version,
                 conversation_history=conversation_history,
                 feedback=feedback,
+                learning_context=learning_context,
+                business_glossary=static_glossary,
                 use_cache=use_cache,
             )
 
@@ -545,7 +830,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         db_cache_hit = False
         db_key = ""
         execution_feedback = None
-        max_exec_attempts = 2
+        max_exec_attempts = int(os.getenv("CHAT_SQL_MAX_ATTEMPTS", "3"))
 
         for exec_attempt in range(max_exec_attempts):
             try:
@@ -560,8 +845,38 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     "allowed_tables": list(active_plugin.get_allowed_tables()) if not is_dynamic else list(dynamic_context.allowed_tables),
                     "allowed_columns": list(active_plugin.get_allowed_columns()) if not is_dynamic else list(dynamic_context.allowed_columns),
                     "time_column": active_plugin.primary_time_column() if not is_dynamic else dynamic_time_column,
+                    "learning_examples": learning_context,
                 }
                 continue
+
+            # Confidence gate for ambiguous questions: ask for clarification instead of guessing.
+            if generation.confidence == "low" and nl_to_sql.classify_intent(resolved_query) == "needs_clarification":
+                clarification_payload = {
+                    "answer_type": "text",
+                    "answer": "Please clarify the metric, dimension, or date range so I can answer accurately.",
+                    "explanation": generation.failure_reason or "low_confidence_clarification",
+                    "sql": None,
+                    "data_last_updated": last_updated,
+                    "confidence": "low",
+                    "plugin": active_plugin.plugin_name,
+                    "assumptions": generation.assumptions,
+                    "requires_clarification": True,
+                    "conversation_id": str(thread_id) if thread_id else None,
+                }
+                if thread_id:
+                    try:
+                        save_conversation_message(db, thread_id, "user", chat_query.query)
+                        save_conversation_message(
+                            db,
+                            thread_id,
+                            "assistant",
+                            clarification_payload["answer"],
+                            answer_type="text",
+                            payload=clarification_payload,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Conversation persistence failed for low-confidence path: {e}")
+                return clarification_payload
 
             if generation.intent != "analytics_query" or not generated_sql:
                 record_audit_log(
@@ -582,6 +897,22 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 }
 
             try:
+                if os.getenv("LLM_SQL_VERIFIER_ENABLED", "true").lower() in {"1", "true", "yes"}:
+                    verifier_context = dynamic_context if is_dynamic else static_schema_context
+                    verifier_result = verify_sql_with_llm(
+                        question=resolved_query,
+                        sql=generated_sql,
+                        schema_context=verifier_context,
+                        config=LLMConfig(),
+                    )
+                    if not verifier_result.get("approved", True):
+                        corrected_sql = verifier_result.get("corrected_sql")
+                        reason = verifier_result.get("reason") or "sql_verifier_rejected"
+                        if corrected_sql:
+                            generated_sql = corrected_sql
+                        else:
+                            raise ValueError(f"sql_verifier_rejected: {reason}")
+
                 if is_dynamic:
                     scoped_sql = generated_sql
                 else:
@@ -624,6 +955,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     "allowed_tables": list(active_plugin.get_allowed_tables()) if not is_dynamic else list(dynamic_context.allowed_tables),
                     "allowed_columns": list(active_plugin.get_allowed_columns()) if not is_dynamic else list(dynamic_context.allowed_columns),
                     "time_column": active_plugin.primary_time_column() if not is_dynamic else dynamic_time_column,
+                    "learning_examples": learning_context,
                 }
 
         if result_payload is None:
@@ -642,12 +974,18 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         else:
             answer = result_payload["rows"]
 
+        sanity_warnings = _result_sanity_warnings(resolved_query, answer_type, answer)
+        confidence_score = _confidence_to_score(generation.confidence)
+        if sanity_warnings:
+            confidence_score -= 1
+        final_confidence = _score_to_confidence(confidence_score)
+
         exec_ms = int((time.time() - t0) * 1000)
         record_audit_log(
             db, plugin_id=active_plugin.plugin_name, dataset_id=dataset_id,
             user_question=chat_query.query, intent=generation.intent, generated_sql=scoped_sql,
             sql_valid=True, execution_ms=exec_ms, rows_returned=result_payload["row_count"],
-            confidence=generation.confidence, failure_reason=None, model_name=generation.model_name,
+            confidence=final_confidence, failure_reason=None, model_name=generation.model_name,
         )
 
         # Chart hint
@@ -669,6 +1007,8 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 summary = f"Returned {len(answer)} rows."
             elif answer_type == "number":
                 summary = f"The result is {answer}."
+        if sanity_warnings:
+            summary = (summary + " " if summary else "") + f"Sanity check: {sanity_warnings[0]}"
 
         # Narrative generation
         narrative = ""
@@ -691,16 +1031,36 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             history_id = record_query_history(
                 db, plugin_id=active_plugin.plugin_name, dataset_id=dataset_id,
                 question=chat_query.query, sql=scoped_sql, answer_type=answer_type,
-                answer_summary=narrative or summary, confidence=generation.confidence,
+                answer_summary=narrative or summary, confidence=final_confidence,
             )
         except Exception as e:
             logger.warning(f"Query history recording failed: {e}")
+
+        response_payload = {
+            "answer_type": answer_type,
+            "answer": answer,
+            "summary": summary,
+            "narrative": narrative,
+            "chart_hint": chart_hint,
+            "sql": scoped_sql,
+            "confidence": final_confidence,
+            "plugin": active_plugin.plugin_name,
+            "assumptions": generation.assumptions + sanity_warnings,
+        }
 
         # Multi-turn: persist messages
         if thread_id:
             try:
                 save_conversation_message(db, thread_id, "user", chat_query.query)
-                save_conversation_message(db, thread_id, "assistant", narrative or summary or str(answer)[:500], sql=scoped_sql, answer_type=answer_type)
+                save_conversation_message(
+                    db,
+                    thread_id,
+                    "assistant",
+                    narrative or summary or str(answer)[:500],
+                    sql=scoped_sql,
+                    answer_type=answer_type,
+                    payload=response_payload,
+                )
             except Exception as e:
                 logger.warning(f"Conversation message persistence failed: {e}")
 
@@ -714,11 +1074,12 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         return {
             "answer_type": answer_type, "answer": answer, "explanation": "Validated SQL executed against dataset.",
             "summary": summary, "narrative": narrative, "chart_hint": chart_hint, "sql": scoped_sql,
-            "data_last_updated": last_updated, "confidence": generation.confidence,
-            "plugin": active_plugin.plugin_name, "assumptions": generation.assumptions,
+            "data_last_updated": last_updated, "confidence": final_confidence,
+            "plugin": active_plugin.plugin_name, "assumptions": generation.assumptions + sanity_warnings,
             "dataset_filter_enforced": True,
             "conversation_id": str(thread_id) if thread_id else None,
             "history_id": str(history_id) if history_id else None,
+            "sanity_warnings": sanity_warnings,
             "cache": {
                 "llm_sql": {"hit": generation.cache_info.get("llm_cache_hit", False), "key": generation.cache_info.get("llm_cache_key")},
                 "db_result": {"hit": db_cache_hit, "key": db_key[:8]},
@@ -819,6 +1180,20 @@ def get_plugin_questions(plugin_id: str):
             {"id": name, "title": pack.description or name, "questions": [p.pattern for p in pack.patterns]}
             for name, pack in plugin.question_packs.items()
         ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/plugins/{plugin_id}/glossary")
+def get_plugin_glossary(plugin_id: str):
+    try:
+        plugin = nl_to_sql.PLUGIN_MANAGER.get_plugin(plugin_id) if nl_to_sql.PLUGIN_MANAGER else None
+        if not plugin:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+        glossary = plugin.get_business_glossary() if hasattr(plugin, "get_business_glossary") else []
+        return {"plugin": plugin_id, "glossary": glossary}
     except HTTPException:
         raise
     except Exception as e:

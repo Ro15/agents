@@ -40,6 +40,11 @@ def _run_migrations(eng):
         ("datasets", "file_path",    "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS file_path VARCHAR"),
         ("datasets", "file_format",  "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS file_format VARCHAR"),
         ("datasets", "column_count", "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS column_count INTEGER"),
+        ("conversation_threads", "is_pinned", "ALTER TABLE conversation_threads ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT false"),
+        ("conversation_threads", "archived", "ALTER TABLE conversation_threads ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT false"),
+        ("conversation_threads", "summary", "ALTER TABLE conversation_threads ADD COLUMN IF NOT EXISTS summary TEXT"),
+        ("conversation_threads", "last_message_preview", "ALTER TABLE conversation_threads ADD COLUMN IF NOT EXISTS last_message_preview TEXT"),
+        ("conversation_messages", "payload", "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS payload JSON"),
     ]
     with eng.begin() as conn:
         for table, col, ddl in migrations:

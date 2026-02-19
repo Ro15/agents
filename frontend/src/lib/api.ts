@@ -5,8 +5,10 @@ import type {
   Insight,
   PluginMeta,
   QuestionPack,
+  GlossaryTerm,
   JobStatus,
   ConversationThread,
+  ConversationMemoryItem,
   QueryHistoryItem,
   FeedbackPayload,
   FeedbackItem,
@@ -58,6 +60,7 @@ export const getPlugins = async (): Promise<PluginMeta[]> => {
 };
 export const getPlugin = (pluginId: string) => request<any>(`/plugins/${pluginId}`);
 export const getPluginQuestions = (pluginId: string) => request<QuestionPack[]>(`/plugins/${pluginId}/questions`);
+export const getPluginGlossary = (pluginId: string) => request<{ plugin: string; glossary: GlossaryTerm[] }>(`/plugins/${pluginId}/glossary`);
 export const getPluginViews = async (pluginId: string) => {
   try {
     const res = await request<any>(`/plugins/${pluginId}/views`);
@@ -211,16 +214,36 @@ export const createConversation = (plugin_id: string, dataset_id?: string | null
     body: JSON.stringify({ plugin_id, dataset_id, title }),
   });
 
-export const listConversations = (plugin_id?: string, dataset_id?: string) => {
+export const listConversations = (
+  plugin_id?: string,
+  dataset_id?: string,
+  opts?: { search?: string; include_archived?: boolean; limit?: number }
+) => {
   const params = new URLSearchParams();
   if (plugin_id) params.set("plugin_id", plugin_id);
   if (dataset_id) params.set("dataset_id", dataset_id);
+  if (opts?.search) params.set("search", opts.search);
+  if (opts?.include_archived) params.set("include_archived", "true");
+  if (opts?.limit) params.set("limit", String(opts.limit));
   const q = params.toString();
   return request<ConversationThread[]>(`/conversations${q ? `?${q}` : ""}`);
 };
 
 export const getConversation = (threadId: string) =>
   request<ConversationThread & { messages: any[] }>(`/conversations/${threadId}`);
+
+export const updateConversation = (
+  threadId: string,
+  data: { title?: string; is_pinned?: boolean; archived?: boolean }
+) =>
+  request<ConversationThread>(`/conversations/${threadId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+export const getConversationMemory = (threadId: string) =>
+  request<ConversationMemoryItem[]>(`/conversations/${threadId}/memory`);
 
 export const deleteConversation = (threadId: string) =>
   request<{ status: string }>(`/conversations/${threadId}`, { method: "DELETE" });

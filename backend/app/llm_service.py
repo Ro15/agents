@@ -206,6 +206,8 @@ class SchemaContext:
                  views: Optional[List[str]] = None,
                  dynamic_columns: Optional[List[Dict[str, Any]]] = None,
                  dynamic_table: Optional[str] = None,
+                 focus_columns: Optional[List[str]] = None,
+                 business_glossary: Optional[List[Dict[str, str]]] = None,
                  relationships_description: str = "",
                  schema_description: str = ""):
         """
@@ -228,6 +230,8 @@ class SchemaContext:
         self.views = views or []
         self.dynamic_columns = dynamic_columns
         self.dynamic_table = dynamic_table
+        self.focus_columns = focus_columns or []
+        self.business_glossary = business_glossary or []
         self.relationships_description = relationships_description
         self.schema_description = schema_description
 
@@ -250,6 +254,15 @@ class SchemaContext:
                 schema_text += f"  - `{name}` ({dtype}){desc_str}\n"
             schema_text += f"\nIMPORTANT: Only use the table `{self.dynamic_table}` in your SQL.\n"
             schema_text += "Do NOT add WHERE clauses for dataset_id; the system handles filtering.\n"
+            if self.focus_columns:
+                schema_text += f"\nFocus columns for this question: {', '.join(self.focus_columns[:20])}\n"
+            if self.business_glossary:
+                schema_text += "\n## Business Glossary\n"
+                for item in self.business_glossary[:25]:
+                    term = item.get("term", "").strip()
+                    definition = item.get("definition", "").strip()
+                    if term and definition:
+                        schema_text += f"- `{term}`: {definition}\n"
             return schema_text
 
         # Static (plugin) dataset
@@ -273,6 +286,18 @@ class SchemaContext:
         # Include relationship info for multi-table JOINs
         if self.relationships_description:
             schema_text += "\n" + self.relationships_description + "\n"
+
+        if self.focus_columns:
+            schema_text += "\n## Focus Columns For This Question\n"
+            schema_text += ", ".join(self.focus_columns[:25]) + "\n"
+
+        if self.business_glossary:
+            schema_text += "\n## Business Glossary\n"
+            for item in self.business_glossary[:40]:
+                term = item.get("term", "").strip()
+                definition = item.get("definition", "").strip()
+                if term and definition:
+                    schema_text += f"- `{term}`: {definition}\n"
 
         schema_text += "\nRemember: do NOT filter dataset_id; system injects it."
         return schema_text
@@ -374,6 +399,7 @@ def generate_sql_with_llm(
     schema_context: SchemaContext,
     config: Optional[LLMConfig] = None,
     feedback: Optional[Dict[str, Any]] = None,
+    extra_context: Optional[str] = None,
     timezone: str = "UTC",
     today_iso: Optional[str] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
@@ -400,6 +426,9 @@ def generate_sql_with_llm(
     feedback_block = ""
     if feedback:
         feedback_block = f"\n\nPrevious attempt failed. Error: {feedback.get('error')}\nAllowed tables: {', '.join(sorted(feedback.get('allowed_tables', [])))}\nAllowed columns: {', '.join(sorted(feedback.get('allowed_columns', [])))}\nTime column: {feedback.get('time_column')}"
+        learning_examples = (feedback.get("learning_examples") or "").strip()
+        if learning_examples:
+            feedback_block += f"\n\nLearned corrections from prior feedback:\n{learning_examples[:2500]}"
 
     system_prompt = """You are a PostgreSQL expert assistant that converts natural language questions into SQL queries.
 
@@ -452,11 +481,16 @@ FORBIDDEN OPERATIONS:
             content = (turn.get("content") or "")[:500]  # truncate long answers
             conversation_block += f"- {role}: {content}\n"
 
+    extra_context_block = ""
+    if extra_context:
+        extra_context_block = f"## Extra Guidance\n{extra_context}\n"
+
     user_prompt = f"""{schema_prompt}
 
 ## Question
 {question}
 {conversation_block}
+{extra_context_block}
 ## Context
 - Timezone: {timezone}
 - Today: {today_iso or "unknown"}
@@ -545,3 +579,76 @@ Generate a PostgreSQL query to answer this question. Return ONLY a valid JSON ob
     except Exception as e:
         logger.error(f"Error calling LLM: {e}")
         return None
+
+
+def verify_sql_with_llm(
+    question: str,
+    sql: str,
+    schema_context: SchemaContext,
+    config: Optional[LLMConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Second-pass SQL validator.
+    Returns {"approved": bool, "reason": str, "corrected_sql": Optional[str]}.
+    """
+    if config is None:
+        config = LLMConfig()
+    if not config.available:
+        return {"approved": True, "reason": "verifier_unavailable", "corrected_sql": None}
+
+    schema_prompt = schema_context.to_prompt_string()
+    system_prompt = (
+        "You are a strict SQL verifier for PostgreSQL analytics queries. "
+        "Check whether SQL matches the business question and schema. "
+        "Return ONLY JSON with keys approved (bool), reason (string), corrected_sql (string|null). "
+        "Use corrected_sql only if a clear safe fix exists."
+    )
+    user_prompt = (
+        f"{schema_prompt}\n\n"
+        f"Question: {question}\n"
+        f"Candidate SQL: {sql}\n"
+        "Validate joins, filters, grouping, and metric interpretation."
+    )
+    try:
+        if config.provider == "openai":
+            response_text = _openai_chat_text(
+                config,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0,
+                max_tokens=min(350, config.max_tokens),
+            )
+        else:
+            model_name = config.model
+            if not model_name.startswith("models/"):
+                model_name = f"models/{model_name}"
+            model = genai.GenerativeModel(model_name)
+            gen_response = model.generate_content(
+                system_prompt + "\n\n" + user_prompt,
+                generation_config={"temperature": 0, "max_output_tokens": min(350, config.max_tokens)},
+            )
+            response_text = ""
+            if getattr(gen_response, "candidates", None):
+                for part in gen_response.candidates[0].content.parts:
+                    if hasattr(part, "text"):
+                        response_text = part.text
+                        break
+            if not response_text:
+                response_text = (getattr(gen_response, "text", "") or "").strip()
+
+        parsed = {}
+        try:
+            parsed = json.loads(response_text)
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", response_text, re.S)
+            if m:
+                parsed = json.loads(m.group(0))
+        approved = bool(parsed.get("approved", True))
+        reason = str(parsed.get("reason") or "").strip()[:500]
+        corrected = parsed.get("corrected_sql")
+        if corrected is not None:
+            corrected = str(corrected).strip() or None
+        return {"approved": approved, "reason": reason, "corrected_sql": corrected}
+    except Exception as e:
+        logger.warning(f"SQL verifier skipped due to error: {e}")
+        return {"approved": True, "reason": "verifier_error", "corrected_sql": None}

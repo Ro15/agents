@@ -8,31 +8,50 @@ import { SmartChart } from "../components/SmartChart";
 import { TrustPanel } from "../components/TrustPanel";
 import { EmptyState } from "../components/EmptyState";
 import { UploadModal } from "../components/UploadModal";
-import { chat, getPluginQuestions, createConversation, submitFeedback } from "../lib/api";
-import type { ChatResponse } from "../types";
+import {
+  chat,
+  getPluginQuestions,
+  createConversation,
+  submitFeedback,
+  listConversations,
+  getConversation,
+  getConversationMemory,
+  updateConversation,
+  deleteConversation,
+} from "../lib/api";
+import type { ChatResponse, ConversationMemoryItem, ConversationThread } from "../types";
 import { useToast } from "../components/Toast";
-import { useLocalChats } from "../hooks/useLocalChats";
 import { Skeleton } from "../components/Skeleton";
+
+type ChatMessage =
+  | { role: "user"; content: string; createdAt: string }
+  | { role: "assistant"; content: ChatResponse; createdAt: string };
 
 export const ChatPage: React.FC = () => {
   const { activePlugin, activeDataset, setActiveDataset, upsertDatasetForPlugin } = useAppState();
   const navigate = useNavigate();
   const location = useLocation();
   const { push } = useToast();
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
-  const { messages, setMessages } = useLocalChats(activePlugin, activeDataset?.dataset_id || null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [threads, setThreads] = useState<ConversationThread[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [loadingThreads, setLoadingThreads] = useState(false);
+  const [loadingThreadMessages, setLoadingThreadMessages] = useState(false);
+  const [threadFilter, setThreadFilter] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [loadingMemory, setLoadingMemory] = useState(false);
+  const [threadMemory, setThreadMemory] = useState<ConversationMemoryItem[]>([]);
+
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [autoSend, setAutoSend] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [showSuggestionsPanel, setShowSuggestionsPanel] = useState(true);
-
-  // Multi-turn conversation state
-  const [conversationId, setConversationId] = useState<string | null>(null);
-
-  // Feedback state: tracks which messages have been rated
   const [feedbackGiven, setFeedbackGiven] = useState<Record<number, 1 | -1>>({});
+  const [chartView, setChartView] = useState<Record<number, "chart" | "table">>({});
 
   const canChat = !!activeDataset;
 
@@ -51,6 +70,113 @@ export const ChatPage: React.FC = () => {
     ],
     []
   );
+
+  const filteredThreads = useMemo(() => {
+    const q = threadFilter.trim().toLowerCase();
+    if (!q) return threads;
+    return threads.filter(
+      (t) =>
+        (t.title || "").toLowerCase().includes(q) ||
+        (t.last_message_preview || "").toLowerCase().includes(q)
+    );
+  }, [threadFilter, threads]);
+
+  const buildConversationHistory = () => {
+    return messages.slice(-10).map((m) => ({
+      role: m.role,
+      content:
+        m.role === "user"
+          ? m.content
+          : (m.content as ChatResponse).summary ||
+            (m.content as ChatResponse).narrative ||
+            String((m.content as ChatResponse).answer).slice(0, 300),
+    }));
+  };
+
+  const normalizeAssistantPayload = (raw: any): ChatResponse => {
+    if (raw && typeof raw === "object" && raw.answer_type) {
+      return raw as ChatResponse;
+    }
+    return {
+      answer_type: "text",
+      answer: typeof raw === "string" ? raw : JSON.stringify(raw ?? ""),
+      explanation: "Loaded from conversation history.",
+      sql: null,
+      confidence: "medium",
+      plugin: activePlugin,
+      summary: typeof raw === "string" ? raw : "",
+    };
+  };
+
+  const loadThreadMessages = async (threadId: string) => {
+    setLoadingThreadMessages(true);
+    setLoadingMemory(true);
+    try {
+      const [thread, memory] = await Promise.all([
+        getConversation(threadId),
+        getConversationMemory(threadId),
+      ]);
+      const mapped: ChatMessage[] = (thread.messages || []).map((m: any) => {
+        if (m.role === "user") {
+          return {
+            role: "user",
+            content: m.content || "",
+            createdAt: m.created_at || new Date().toISOString(),
+          };
+        }
+        return {
+          role: "assistant",
+          content: normalizeAssistantPayload(m.payload || m.content),
+          createdAt: m.created_at || new Date().toISOString(),
+        };
+      });
+      setMessages(mapped);
+      setConversationId(threadId);
+      setFeedbackGiven({});
+      setChartView({});
+      setThreadMemory(memory || []);
+    } catch (err: any) {
+      push(err?.message || "Failed to load conversation", "error");
+      setThreadMemory([]);
+    } finally {
+      setLoadingThreadMessages(false);
+      setLoadingMemory(false);
+    }
+  };
+
+  const refreshThreads = async (
+    preferredThreadId?: string | null,
+    opts?: { loadMessages?: boolean }
+  ) => {
+    if (!activeDataset?.dataset_id) {
+      setThreads([]);
+      return;
+    }
+    const shouldLoadMessages = opts?.loadMessages !== false;
+    setLoadingThreads(true);
+    try {
+      const list = await listConversations(activePlugin, activeDataset.dataset_id, {
+        include_archived: showArchived,
+      });
+      setThreads(list);
+      const preferred = preferredThreadId || conversationId;
+      if (shouldLoadMessages && preferred && list.find((t) => t.thread_id === preferred)) {
+        if (preferred !== conversationId || messages.length === 0) {
+          await loadThreadMessages(preferred);
+        }
+      } else if (shouldLoadMessages && list.length > 0) {
+        await loadThreadMessages(list[0].thread_id);
+      } else if (shouldLoadMessages) {
+        setConversationId(null);
+        setMessages([]);
+        setThreadMemory([]);
+      }
+    } catch (err: any) {
+      push(err?.message || "Failed to load chat sessions", "error");
+    } finally {
+      setLoadingThreads(false);
+    }
+  };
 
   useEffect(() => {
     const prefill = (location.state as any)?.prefill;
@@ -73,49 +199,132 @@ export const ChatPage: React.FC = () => {
     loadSuggestions();
   }, [activePlugin, fallbackSuggestions]);
 
-  // Build conversation history for multi-turn context
-  const buildConversationHistory = () => {
-    return messages.slice(-10).map((m) => ({
-      role: m.role,
-      content:
-        m.role === "user"
-          ? (m.content as string)
-          : (m.content as ChatResponse).summary ||
-            (m.content as ChatResponse).narrative ||
-            String((m.content as ChatResponse).answer).slice(0, 300),
-    }));
+  useEffect(() => {
+    setMessages([]);
+    setConversationId(null);
+    setFeedbackGiven({});
+    setThreadMemory([]);
+    if (!activeDataset?.dataset_id) {
+      setThreads([]);
+      return;
+    }
+    refreshThreads(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlugin, activeDataset?.dataset_id, showArchived]);
+
+  const handleNewConversation = async () => {
+    if (!activeDataset?.dataset_id) return;
+    try {
+      const thread = await createConversation(activePlugin, activeDataset.dataset_id, "New conversation");
+      setThreads((prev) => [thread, ...prev.filter((t) => t.thread_id !== thread.thread_id)]);
+      setConversationId(thread.thread_id);
+      setMessages([]);
+      setFeedbackGiven({});
+      setChartView({});
+      setThreadMemory([]);
+      setInput("");
+    } catch (err: any) {
+      push(err?.message || "Failed to create conversation", "error");
+    }
+  };
+
+  const handleRenameConversation = async (thread: ConversationThread) => {
+    const nextTitle = window.prompt("Rename chat", thread.title || "New conversation");
+    if (nextTitle === null) return;
+    try {
+      const updated = await updateConversation(thread.thread_id, { title: nextTitle });
+      setThreads((prev) => prev.map((t) => (t.thread_id === updated.thread_id ? updated : t)));
+    } catch (err: any) {
+      push(err?.message || "Rename failed", "error");
+    }
+  };
+
+  const handleTogglePinConversation = async (thread: ConversationThread) => {
+    try {
+      const updated = await updateConversation(thread.thread_id, { is_pinned: !thread.is_pinned });
+      setThreads((prev) =>
+        prev
+          .map((t) => (t.thread_id === updated.thread_id ? updated : t))
+          .sort((a, b) => {
+            const pinDiff = Number(!!b.is_pinned) - Number(!!a.is_pinned);
+            if (pinDiff !== 0) return pinDiff;
+            return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+          })
+      );
+    } catch (err: any) {
+      push(err?.message || "Pin update failed", "error");
+    }
+  };
+
+  const handleToggleArchiveConversation = async (thread: ConversationThread) => {
+    try {
+      await updateConversation(thread.thread_id, { archived: !thread.archived });
+      await refreshThreads(conversationId);
+    } catch (err: any) {
+      push(err?.message || "Archive update failed", "error");
+    }
+  };
+
+  const handleDeleteConversation = async (thread: ConversationThread) => {
+    const ok = window.confirm(`Delete "${thread.title || "conversation"}"?`);
+    if (!ok) return;
+    try {
+      await deleteConversation(thread.thread_id);
+      const next = threads.filter((t) => t.thread_id !== thread.thread_id);
+      setThreads(next);
+      if (conversationId === thread.thread_id) {
+        if (next.length > 0) {
+          await loadThreadMessages(next[0].thread_id);
+        } else {
+          setConversationId(null);
+          setMessages([]);
+          setThreadMemory([]);
+        }
+      }
+    } catch (err: any) {
+      push(err?.message || "Delete failed", "error");
+    }
   };
 
   const sendMessage = async (override?: string) => {
     const text = (override ?? input).trim();
     if (!text || !canChat) return;
-    const userMsg = { role: "user" as const, content: text, createdAt: new Date().toISOString() };
+
+    let threadId = conversationId;
+    if (!threadId) {
+      try {
+        const thread = await createConversation(activePlugin, activeDataset?.dataset_id, text.slice(0, 60));
+        threadId = thread.thread_id;
+        setConversationId(threadId);
+        setThreads((prev) => [thread, ...prev.filter((t) => t.thread_id !== thread.thread_id)]);
+      } catch (err: any) {
+        push(err?.message || "Failed to create conversation", "error");
+        return;
+      }
+    }
+
+    const userMsg: ChatMessage = { role: "user", content: text, createdAt: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setLoading(true);
     try {
-      // Auto-create a conversation thread if none exists
-      let threadId = conversationId;
-      if (!threadId) {
-        try {
-          const thread = await createConversation(activePlugin, activeDataset?.dataset_id, text.slice(0, 60));
-          threadId = thread.thread_id;
-          setConversationId(threadId);
-        } catch {
-          // Non-critical; continue without thread
-        }
-      }
-
       const history = buildConversationHistory();
-      const resp = await chat(activePlugin, activeDataset?.dataset_id || null, userMsg.content, threadId, history);
+      const resp = await chat(activePlugin, activeDataset?.dataset_id || null, text, threadId, history);
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: resp,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
 
-      // Update conversation_id if returned
-      if (resp.conversation_id && !conversationId) {
+      if (resp.conversation_id) {
         setConversationId(resp.conversation_id);
       }
-
-      const assistantMsg = { role: "assistant" as const, content: resp, createdAt: new Date().toISOString() };
-      setMessages((prev) => [...prev, assistantMsg]);
+      const targetThreadId = resp.conversation_id || threadId;
+      await refreshThreads(targetThreadId, { loadMessages: false });
+      if (targetThreadId) {
+        await loadThreadMessages(targetThreadId);
+      }
     } catch (err: any) {
       push(err?.message || "Chat failed", "error");
     } finally {
@@ -126,21 +335,13 @@ export const ChatPage: React.FC = () => {
   const handleUploadSuccess = (meta: import("../types").DatasetMeta) => {
     upsertDatasetForPlugin(activePlugin, meta);
     setActiveDataset(meta);
-    setMessages([]); // reset chat history for the new dataset
-    setConversationId(null); // reset conversation thread
+    setMessages([]);
+    setConversationId(null);
     setFeedbackGiven({});
     setInput("");
     setShowUpload(false);
   };
 
-  const handleNewConversation = () => {
-    setMessages([]);
-    setConversationId(null);
-    setFeedbackGiven({});
-    setInput("");
-  };
-
-  // Feedback handler
   const handleFeedback = async (msgIdx: number, rating: 1 | -1, resp: ChatResponse) => {
     try {
       await submitFeedback({
@@ -157,10 +358,7 @@ export const ChatPage: React.FC = () => {
     }
   };
 
-  const [chartView, setChartView] = useState<Record<number, "chart" | "table">>({});
-
   const renderAnswer = (resp: ChatResponse, msgIdx: number) => {
-    // Number answer -- big stat with context
     if (resp.answer_type === "number") {
       const formatted =
         typeof resp.answer === "number"
@@ -178,7 +376,6 @@ export const ChatPage: React.FC = () => {
       );
     }
 
-    // Table answer -- chart + table toggle
     if (resp.answer_type === "table" && Array.isArray(resp.answer) && resp.answer.length > 0) {
       const view = chartView[msgIdx] || "chart";
       const showChart = view === "chart" && resp.answer.length >= 2 && resp.answer.length <= 500;
@@ -189,9 +386,7 @@ export const ChatPage: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-                view === "chart"
-                  ? "bg-brand-blue text-white"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                view === "chart" ? "bg-brand-blue text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
               }`}
               onClick={() => setChartView((p) => ({ ...p, [msgIdx]: "chart" }))}
             >
@@ -199,9 +394,7 @@ export const ChatPage: React.FC = () => {
             </button>
             <button
               className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-                view === "table"
-                  ? "bg-brand-blue text-white"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                view === "table" ? "bg-brand-blue text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
               }`}
               onClick={() => setChartView((p) => ({ ...p, [msgIdx]: "table" }))}
             >
@@ -215,7 +408,6 @@ export const ChatPage: React.FC = () => {
       );
     }
 
-    // Text / fallback
     if (Array.isArray(resp.answer)) {
       const objectRows = resp.answer.filter((r) => r && typeof r === "object");
       if (objectRows.length === resp.answer.length && objectRows.length > 0) {
@@ -243,7 +435,7 @@ export const ChatPage: React.FC = () => {
 
     return (
       <div>
-        <p className="text-sm text-slate-800 whitespace-pre-wrap">{resp.answer}</p>
+        <p className="text-sm text-slate-800 whitespace-pre-wrap">{String(resp.answer ?? "")}</p>
         {resp.narrative && resp.narrative !== String(resp.answer) && (
           <p className="mt-1 text-sm text-slate-700 italic">{resp.narrative}</p>
         )}
@@ -262,40 +454,147 @@ export const ChatPage: React.FC = () => {
         </Button>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[220px,1fr,280px]">
+      <div className="grid gap-6 lg:grid-cols-[280px,1fr,280px]">
         <div className="space-y-3">
+          <Card
+            title="Chat Sessions"
+            actions={
+              <Button size="sm" onClick={handleNewConversation} disabled={!canChat}>
+                New
+              </Button>
+            }
+          >
+            <div className="space-y-2">
+              <input
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
+                placeholder="Search chats..."
+                value={threadFilter}
+                onChange={(e) => setThreadFilter(e.target.value)}
+              />
+              <label className="flex items-center gap-2 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-brand-blue focus:ring-brand-blue"
+                />
+                Show archived
+              </label>
+              {loadingThreads ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <Skeleton key={i} className="h-10 w-full" />
+                  ))}
+                </div>
+              ) : filteredThreads.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  {canChat ? "No chat sessions yet. Start a new one." : "Select a dataset to enable chat sessions."}
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {filteredThreads.map((t) => (
+                    <li key={t.thread_id}>
+                      <button
+                        className={`w-full rounded-md border px-3 py-2 text-left transition ${
+                          conversationId === t.thread_id
+                            ? "border-brand-blue bg-brand-blue/5"
+                            : "border-slate-200 hover:border-slate-300"
+                        }`}
+                        onClick={() => loadThreadMessages(t.thread_id)}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-sm font-semibold text-slate-800">{t.title || "New conversation"}</span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTogglePinConversation(t);
+                              }}
+                              title={t.is_pinned ? "Unpin" : "Pin"}
+                            >
+                              {t.is_pinned ? "Unpin" : "Pin"}
+                            </button>
+                            <button
+                              className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleArchiveConversation(t);
+                              }}
+                              title={t.archived ? "Unarchive" : "Archive"}
+                            >
+                              {t.archived ? "Unarchive" : "Archive"}
+                            </button>
+                            <button
+                              className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRenameConversation(t);
+                              }}
+                              title="Rename"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              className="rounded px-1.5 py-0.5 text-[11px] text-red-500 hover:bg-red-50"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteConversation(t);
+                              }}
+                              title="Delete"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          {t.is_pinned && (
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                              Pinned
+                            </span>
+                          )}
+                          {t.archived && (
+                            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                              Archived
+                            </span>
+                          )}
+                        </div>
+                        {t.last_message_preview && (
+                          <p className="mt-1 line-clamp-2 text-xs text-slate-500">{t.last_message_preview}</p>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </Card>
+
           <Card title="Context">
             <p className="text-sm text-slate-600">Plugin: {activePlugin}</p>
             <p className="text-sm text-slate-600">Dataset: {activeDataset?.dataset_id ?? "none"}</p>
-            {activeDataset?.ingested_at && (
-              <p className="text-xs text-slate-500">Ingested: {activeDataset.ingested_at}</p>
-            )}
-            {activeDataset?.row_count !== undefined && (
-              <p className="text-xs text-slate-500">Rows: {activeDataset.row_count}</p>
-            )}
+            {activeDataset?.ingested_at && <p className="text-xs text-slate-500">Ingested: {activeDataset.ingested_at}</p>}
+            {activeDataset?.row_count !== undefined && <p className="text-xs text-slate-500">Rows: {activeDataset.row_count}</p>}
             {conversationId && (
-              <p className="text-xs text-slate-500 mt-1 truncate" title={conversationId}>
+              <p className="mt-1 truncate text-xs text-slate-500" title={conversationId}>
                 Thread: {conversationId.slice(0, 8)}...
               </p>
             )}
           </Card>
+
           <div className="flex flex-col gap-2">
             <Button variant="secondary" onClick={() => navigate("/")}>
               Change Plugin/Dataset
             </Button>
             <Button onClick={() => setShowUpload(true)}>Upload New Dataset</Button>
-            <Button variant="ghost" onClick={handleNewConversation}>
-              New Conversation
-            </Button>
           </div>
-
         </div>
 
         <div className="space-y-4">
           <header>
             <h1 className="text-2xl font-bold text-slate-900">Chat with your data</h1>
             <p className="text-sm text-slate-600">
-              Multi-turn conversations with SQL trace, freshness, confidence, and AI narratives.
+              Session-based chat history with SQL trace, confidence, and context memory.
             </p>
           </header>
 
@@ -314,7 +613,7 @@ export const ChatPage: React.FC = () => {
                 <div className="flex gap-2">
                   <input
                     className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
-                    placeholder="Ask a question (follow-ups work!)..."
+                    placeholder="Ask a question (follow-ups use session memory)..."
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -324,87 +623,90 @@ export const ChatPage: React.FC = () => {
                       }
                     }}
                   />
-                  <Button onClick={() => sendMessage()} disabled={loading}>
+                  <Button onClick={() => sendMessage()} disabled={loading || loadingThreadMessages}>
                     {loading ? "Thinking..." : "Send"}
                   </Button>
                 </div>
                 <div className="text-xs text-slate-500">
-                  Enter to send. Follow-up questions use conversation context. Your queries are constrained to plugin schema.
+                  Enter to send. Follow-up questions use saved session context and memory.
                 </div>
               </div>
 
-              <div className="space-y-4">
-                {messages.map((m, idx) => (
-                  <div key={idx} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      {m.role === "user" ? "You" : "Assistant"}
-                    </div>
-                    {m.role === "user" ? (
-                      <p className="text-sm text-slate-800 whitespace-pre-wrap">{m.content}</p>
-                    ) : (
-                      <>
-                        {renderAnswer(m.content as ChatResponse, idx)}
-                        <TrustPanel
-                          confidence={(m.content as ChatResponse).confidence}
-                          dataLastUpdated={(m.content as ChatResponse).data_last_updated}
-                          sql={(m.content as ChatResponse).sql}
-                        />
-                        {(m.content as ChatResponse).answer_type === "text" && (
-                          <p className="mt-2 text-xs text-slate-500">{(m.content as ChatResponse).explanation}</p>
-                        )}
-
-                        {/* Feedback buttons */}
-                        <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-2">
-                          {feedbackGiven[idx] ? (
-                            <span className="text-xs text-slate-500">
-                              {feedbackGiven[idx] === 1 ? "Rated helpful" : "Rated not helpful"}
-                            </span>
-                          ) : (
-                            <>
-                              <button
-                                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-500 hover:bg-green-50 hover:text-green-700 transition"
-                                onClick={() => handleFeedback(idx, 1, m.content as ChatResponse)}
-                                title="This answer was helpful"
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                  <path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 7.933a4 4 0 00-.8 2.4z" />
-                                </svg>
-                                Helpful
-                              </button>
-                              <button
-                                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-700 transition"
-                                onClick={() => handleFeedback(idx, -1, m.content as ChatResponse)}
-                                title="This answer was not helpful"
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 rotate-180" viewBox="0 0 20 20" fill="currentColor">
-                                  <path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 7.933a4 4 0 00-.8 2.4z" />
-                                </svg>
-                                Not helpful
-                              </button>
-                            </>
+              {loadingThreadMessages ? (
+                <div className="space-y-3">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-28 w-full" />
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {messages.map((m, idx) => (
+                    <div key={idx} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        {m.role === "user" ? "You" : "Assistant"}
+                      </div>
+                      {m.role === "user" ? (
+                        <p className="whitespace-pre-wrap text-sm text-slate-800">{m.content}</p>
+                      ) : (
+                        <>
+                          {renderAnswer(m.content as ChatResponse, idx)}
+                          <TrustPanel
+                            confidence={(m.content as ChatResponse).confidence}
+                            dataLastUpdated={(m.content as ChatResponse).data_last_updated}
+                            sql={(m.content as ChatResponse).sql}
+                          />
+                          {(m.content as ChatResponse).answer_type === "text" && (
+                            <p className="mt-2 text-xs text-slate-500">{(m.content as ChatResponse).explanation}</p>
                           )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-                {messages.length === 0 && (
-                  <Card title="Suggested questions">
-                    <ul className="list-disc space-y-1 pl-4 text-sm text-slate-700">
-                      {suggestions.map((s) => (
-                        <li key={s}>
-                          <button className="text-brand-blue hover:underline" onClick={() => {
-                            if (autoSend) sendMessage(s);
-                            else setInput(s);
-                          }}>
-                            {s}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </Card>
-                )}
-              </div>
+                          <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-2">
+                            {feedbackGiven[idx] ? (
+                              <span className="text-xs text-slate-500">
+                                {feedbackGiven[idx] === 1 ? "Rated helpful" : "Rated not helpful"}
+                              </span>
+                            ) : (
+                              <>
+                                <button
+                                  className="rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-green-50 hover:text-green-700"
+                                  onClick={() => handleFeedback(idx, 1, m.content as ChatResponse)}
+                                  title="This answer was helpful"
+                                >
+                                  Helpful
+                                </button>
+                                <button
+                                  className="rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-red-50 hover:text-red-700"
+                                  onClick={() => handleFeedback(idx, -1, m.content as ChatResponse)}
+                                  title="This answer was not helpful"
+                                >
+                                  Not helpful
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  {messages.length === 0 && (
+                    <Card title="Suggested questions">
+                      <ul className="list-disc space-y-1 pl-4 text-sm text-slate-700">
+                        {suggestions.map((s) => (
+                          <li key={s}>
+                            <button
+                              className="text-brand-blue hover:underline"
+                              onClick={() => {
+                                if (autoSend) sendMessage(s);
+                                else setInput(s);
+                              }}
+                            >
+                              {s}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </Card>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -433,9 +735,9 @@ export const ChatPage: React.FC = () => {
               ) : (
                 <ul className="space-y-2 text-sm text-slate-800">
                   {suggestions.slice(0, 12).map((q) => (
-                    <li key={q} className="flex items-start gap-2">
+                    <li key={q}>
                       <button
-                        className="flex-1 text-left text-brand-blue hover:underline"
+                        className="w-full text-left text-brand-blue hover:underline"
                         onClick={() => {
                           if (autoSend) sendMessage(q);
                           else setInput(q);
@@ -450,8 +752,32 @@ export const ChatPage: React.FC = () => {
             </Card>
             <Card>
               <p className="text-xs text-slate-600">
-                Suggestions come from plugin question packs when available. Otherwise we fall back to generic top questions.
+                Sessions are stored in the database. Follow-ups use both recent turns and session memory.
               </p>
+            </Card>
+            <Card title="Session Memory">
+              {!conversationId ? (
+                <p className="text-xs text-slate-500">Open a chat session to view learned memory.</p>
+              ) : loadingMemory ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-10 w-full" />
+                  ))}
+                </div>
+              ) : threadMemory.length === 0 ? (
+                <p className="text-xs text-slate-500">No memory extracted yet for this session.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {threadMemory.map((m) => (
+                    <li key={m.memory_id} className="rounded border border-slate-200 bg-slate-50 p-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        {m.memory_type.replace(/_/g, " ")}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-700 whitespace-pre-wrap">{m.content}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </Card>
           </aside>
         )}

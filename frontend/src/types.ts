@@ -16,6 +16,8 @@ export interface ChatResponse {
   narrative?: string;
   chart_hint?: ChartHint;
   assumptions?: string[];
+  sanity_warnings?: string[];
+  requires_clarification?: boolean;
   conversation_id?: string | null;
   history_id?: string | null;
 }
@@ -109,6 +111,11 @@ export interface QuestionPack {
   questions: string[];
 }
 
+export interface GlossaryTerm {
+  term: string;
+  definition: string;
+}
+
 export interface JobStatus {
   job_id: string;
   job_type: "INGEST_SALES" | "RUN_INSIGHTS" | string;
@@ -130,6 +137,10 @@ export interface ConversationThread {
   plugin_id: string;
   dataset_id?: string | null;
   title: string;
+  is_pinned?: boolean;
+  archived?: boolean;
+  summary?: string | null;
+  last_message_preview?: string | null;
   created_at?: string;
   updated_at?: string;
   messages?: ConversationMessageItem[];
@@ -141,7 +152,17 @@ export interface ConversationMessageItem {
   content: string;
   sql?: string | null;
   answer_type?: string | null;
+  payload?: ChatResponse | null;
   created_at?: string;
+}
+
+export interface ConversationMemoryItem {
+  memory_id: string;
+  thread_id: string;
+  memory_type: string;
+  content: string;
+  confidence?: string | null;
+  updated_at?: string;
 }
 
 // ── Query history & favorites ────────────────────────────────────

@@ -23,6 +23,7 @@ from app.database import SessionLocal
 from app.helpers import parse_uuid
 from app.models import (
     ConversationThread, ConversationMessage,
+    ConversationMemory,
     QueryHistoryEntry, QueryFeedback,
     CustomDashboard, DashboardWidget,
     ScheduledReport, DataConnector,
@@ -52,6 +53,12 @@ class ConversationCreateRequest(BaseModel):
     title: Optional[str] = None
 
 
+class ConversationUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    is_pinned: Optional[bool] = None
+    archived: Optional[bool] = None
+
+
 @router.post("/conversations")
 def create_conversation(req: ConversationCreateRequest, db: Session = Depends(get_db)):
     thread = ConversationThread(plugin_id=req.plugin_id, dataset_id=req.dataset_id, title=req.title or "New conversation")
@@ -62,13 +69,26 @@ def create_conversation(req: ConversationCreateRequest, db: Session = Depends(ge
 
 
 @router.get("/conversations")
-def list_conversations(plugin_id: Optional[str] = Query(None), dataset_id: Optional[str] = Query(None), limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+def list_conversations(
+    plugin_id: Optional[str] = Query(None),
+    dataset_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
     q = db.query(ConversationThread)
     if plugin_id:
         q = q.filter(ConversationThread.plugin_id == plugin_id)
     if dataset_id:
         q = q.filter(ConversationThread.dataset_id == dataset_id)
-    return [_thread_dict(t) for t in q.order_by(ConversationThread.updated_at.desc()).limit(limit).all()]
+    if not include_archived:
+        q = q.filter(ConversationThread.archived == False)  # noqa: E712
+    if search:
+        like = f"%{search.strip()}%"
+        q = q.filter((ConversationThread.title.ilike(like)) | (ConversationThread.last_message_preview.ilike(like)))
+    q = q.order_by(ConversationThread.is_pinned.desc(), ConversationThread.updated_at.desc())
+    return [_thread_dict(t) for t in q.limit(limit).all()]
 
 
 @router.get("/conversations/{thread_id}")
@@ -83,6 +103,44 @@ def get_conversation(thread_id: str, db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/conversations/{thread_id}/memory")
+def get_conversation_memory(thread_id: str, db: Session = Depends(get_db)):
+    tid = parse_uuid(thread_id, "thread_id")
+    rows = db.query(ConversationMemory).filter(
+        ConversationMemory.thread_id == tid
+    ).order_by(ConversationMemory.updated_at.desc()).all()
+    return [
+        {
+            "memory_id": str(r.memory_id),
+            "thread_id": str(r.thread_id),
+            "memory_type": r.memory_type,
+            "content": r.content,
+            "confidence": r.confidence,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.put("/conversations/{thread_id}")
+def update_conversation(thread_id: str, req: ConversationUpdateRequest, db: Session = Depends(get_db)):
+    tid = parse_uuid(thread_id, "thread_id")
+    thread = db.query(ConversationThread).filter(ConversationThread.thread_id == tid).first()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if req.title is not None:
+        title = req.title.strip()
+        thread.title = title or "New conversation"
+    if req.is_pinned is not None:
+        thread.is_pinned = req.is_pinned
+    if req.archived is not None:
+        thread.archived = req.archived
+    thread.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(thread)
+    return _thread_dict(thread)
+
+
 @router.delete("/conversations/{thread_id}")
 def delete_conversation(thread_id: str, db: Session = Depends(get_db)):
     tid = parse_uuid(thread_id, "thread_id")
@@ -91,33 +149,151 @@ def delete_conversation(thread_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Conversation not found")
     # CASCADE will handle messages if FK is set, but be explicit
     db.query(ConversationMessage).filter(ConversationMessage.thread_id == tid).delete()
+    db.query(ConversationMemory).filter(ConversationMemory.thread_id == tid).delete()
     db.delete(thread)
     db.commit()
     return {"status": "deleted", "thread_id": thread_id}
 
 
 def _thread_dict(t: ConversationThread) -> dict:
-    return {"thread_id": str(t.thread_id), "plugin_id": t.plugin_id, "dataset_id": t.dataset_id, "title": t.title, "created_at": t.created_at.isoformat() if t.created_at else None, "updated_at": t.updated_at.isoformat() if t.updated_at else None}
+    return {
+        "thread_id": str(t.thread_id),
+        "plugin_id": t.plugin_id,
+        "dataset_id": t.dataset_id,
+        "title": t.title,
+        "is_pinned": bool(getattr(t, "is_pinned", False)),
+        "archived": bool(getattr(t, "archived", False)),
+        "summary": getattr(t, "summary", None),
+        "last_message_preview": getattr(t, "last_message_preview", None),
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
 
 
 def _msg_dict(m: ConversationMessage) -> dict:
-    return {"message_id": str(m.message_id), "role": m.role, "content": m.content, "sql": m.sql, "answer_type": m.answer_type, "created_at": m.created_at.isoformat() if m.created_at else None}
+    return {
+        "message_id": str(m.message_id),
+        "role": m.role,
+        "content": m.content,
+        "sql": m.sql,
+        "answer_type": m.answer_type,
+        "payload": m.payload,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+    }
 
 
-def save_conversation_message(db: Session, thread_id: UUID, role: str, content: str, sql: str = None, answer_type: str = None):
-    msg = ConversationMessage(thread_id=thread_id, role=role, content=content, sql=sql, answer_type=answer_type)
+def save_conversation_message(
+    db: Session,
+    thread_id: UUID,
+    role: str,
+    content: str,
+    sql: str = None,
+    answer_type: str = None,
+    payload: Optional[dict] = None,
+):
+    msg = ConversationMessage(
+        thread_id=thread_id,
+        role=role,
+        content=content,
+        sql=sql,
+        answer_type=answer_type,
+        payload=payload,
+    )
     db.add(msg)
     thread = db.query(ConversationThread).filter(ConversationThread.thread_id == thread_id).first()
     if thread:
+        if role == "user" and (not thread.title or thread.title == "New conversation"):
+            thread.title = (content or "").strip()[:60] or "New conversation"
+        thread.last_message_preview = (content or "").strip()[:180]
         thread.updated_at = datetime.utcnow()
     db.commit()
+    _refresh_conversation_memory(db, thread_id)
     return msg
 
 
 def get_conversation_history(db: Session, thread_id: UUID, max_turns: int = 10) -> List[Dict[str, str]]:
     messages = db.query(ConversationMessage).filter(ConversationMessage.thread_id == thread_id).order_by(ConversationMessage.created_at.desc()).limit(max_turns * 2).all()
     messages.reverse()
-    return [{"role": m.role, "content": m.content or ""} for m in messages]
+    history: List[Dict[str, str]] = []
+    for m in messages:
+        if m.role == "assistant" and isinstance(m.payload, dict):
+            summary = (m.payload.get("summary") or m.payload.get("narrative") or m.content or "").strip()
+            sql_text = (m.payload.get("sql") or m.sql or "").strip()
+            if sql_text:
+                content = f"{summary}\nSQL used: {sql_text}"
+            else:
+                content = summary
+            history.append({"role": "assistant", "content": content[:1200]})
+        else:
+            history.append({"role": m.role, "content": (m.content or "")[:1200]})
+    return history
+
+
+def _upsert_memory(db: Session, thread_id: UUID, memory_type: str, content: str, confidence: str = "medium"):
+    if not content:
+        return
+    row = db.query(ConversationMemory).filter(
+        ConversationMemory.thread_id == thread_id,
+        ConversationMemory.memory_type == memory_type,
+    ).first()
+    now = datetime.utcnow()
+    if row:
+        row.content = content[:2000]
+        row.confidence = confidence
+        row.updated_at = now
+    else:
+        row = ConversationMemory(
+            thread_id=thread_id,
+            memory_type=memory_type,
+            content=content[:2000],
+            confidence=confidence,
+            updated_at=now,
+        )
+        db.add(row)
+    db.commit()
+
+
+def _refresh_conversation_memory(db: Session, thread_id: UUID):
+    msgs = db.query(ConversationMessage).filter(
+        ConversationMessage.thread_id == thread_id
+    ).order_by(ConversationMessage.created_at.desc()).limit(24).all()
+    if not msgs:
+        return
+    msgs.reverse()
+    user_msgs = [m.content.strip() for m in msgs if m.role == "user" and (m.content or "").strip()]
+    asst_msgs = [m.content.strip() for m in msgs if m.role == "assistant" and (m.content or "").strip()]
+
+    session_summary_parts: List[str] = []
+    if user_msgs:
+        session_summary_parts.append("Recent user asks: " + " | ".join(user_msgs[-4:]))
+    if asst_msgs:
+        session_summary_parts.append("Recent assistant answers: " + " | ".join(asst_msgs[-2:]))
+    summary = " ".join(session_summary_parts).strip()
+    if summary:
+        _upsert_memory(db, thread_id, "session_summary", summary[:2000], confidence="medium")
+
+    preference_markers = ("prefer", "focus on", "only", "exclude", "include", "show as")
+    prefs = [m for m in user_msgs if any(marker in m.lower() for marker in preference_markers)]
+    if prefs:
+        _upsert_memory(db, thread_id, "user_preferences", " | ".join(prefs[-3:]), confidence="medium")
+
+    thread = db.query(ConversationThread).filter(ConversationThread.thread_id == thread_id).first()
+    if thread and summary:
+        thread.summary = summary[:400]
+        thread.updated_at = datetime.utcnow()
+        db.commit()
+
+
+def get_conversation_memory_context(db: Session, thread_id: UUID) -> List[Dict[str, str]]:
+    rows = db.query(ConversationMemory).filter(
+        ConversationMemory.thread_id == thread_id
+    ).order_by(ConversationMemory.updated_at.desc()).all()
+    context: List[Dict[str, str]] = []
+    for r in rows:
+        if not (r.content or "").strip():
+            continue
+        context.append({"role": "system", "content": f"Memory ({r.memory_type}): {r.content}"})
+    return context
 
 
 # ═══════════════════════════════════════════════════════════════════════

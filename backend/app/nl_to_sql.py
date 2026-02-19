@@ -180,6 +180,9 @@ def generate_sql(
     prompt_version: str = "v2",
     conversation_history: list = None,
     feedback: Optional[dict] = None,
+    learning_context: Optional[str] = None,
+    business_glossary: Optional[List[dict]] = None,
+    focus_columns: Optional[List[str]] = None,
     use_cache: bool = True,
     timezone: Optional[str] = None,
 ) -> SQLGenerationResult:
@@ -224,6 +227,10 @@ def generate_sql(
         plugin_name=ACTIVE_PLUGIN.plugin_name,
         metrics_description=ACTIVE_PLUGIN.get_metrics_description(),
         views=getattr(ACTIVE_PLUGIN, "compiled_views", []),
+        focus_columns=focus_columns or [],
+        business_glossary=business_glossary if business_glossary is not None else (
+            ACTIVE_PLUGIN.get_business_glossary() if hasattr(ACTIVE_PLUGIN, "get_business_glossary") else []
+        ),
         relationships_description=ACTIVE_PLUGIN.get_relationships_description(),
         schema_description=ACTIVE_PLUGIN.get_schema_description(),
     )
@@ -238,6 +245,8 @@ def generate_sql(
         "dataset_id": dataset_id,
         "dataset_version": dataset_version,
         "question": normalize_question(query),
+        "learning_context": (learning_context or "")[:200],
+        "focus_columns": sorted((focus_columns or [])[:20]),
         "config_hash": plugin_config_hash or ACTIVE_PLUGIN.plugin_name,
         "prompt_version": prompt_version,
         "model": config.model,
@@ -272,6 +281,7 @@ def generate_sql(
             schema_context=schema_context,
             config=config,
             feedback=last_error,
+            extra_context=learning_context,
             timezone=tz,
             today_iso=today_iso,
             conversation_history=conversation_history,

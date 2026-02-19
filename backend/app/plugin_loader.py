@@ -421,6 +421,38 @@ class PluginConfig:
                 description += f"  (Aggregation: {metric.aggregation})\n"
         
         return description
+
+    def get_business_glossary(self, max_entries: int = 40) -> List[Dict[str, str]]:
+        """
+        Returns a lightweight business glossary for prompt grounding.
+        """
+        entries: List[Dict[str, str]] = []
+
+        for metric_name, metric in self.metrics.items():
+            term = metric_name.replace("_", " ").strip()
+            definition = (metric.description or "").strip()
+            if term and definition:
+                entries.append({"term": term, "definition": definition})
+
+        for table in self.schema.values():
+            for col in table.columns.values():
+                term = col.name.replace("_", " ").strip()
+                definition = (col.meaning or "").strip()
+                if term and definition:
+                    entries.append({"term": term, "definition": definition})
+
+        # Preserve order while de-duplicating by term.
+        deduped: List[Dict[str, str]] = []
+        seen: Set[str] = set()
+        for item in entries:
+            key = item["term"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+            if len(deduped) >= max_entries:
+                break
+        return deduped
     
     def validate_question(self, question: str) -> tuple[bool, str]:
         """

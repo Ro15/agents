@@ -90,3 +90,42 @@ Failing messages include plugin id, file, and missing references for quick fixes
   - `DB_RESULT_CACHE_TTL_SECONDS` (default 120)
 - In-memory TTL cache is used by default; Redis optional is not required.
 - Cache keys include plugin_id + dataset_id + dataset_version to avoid cross-dataset leakage.
+
+## Chat sessions and memory (new)
+- `POST /conversations` - create a chat session
+- `GET /conversations` - list sessions (supports `search`, `include_archived`, `limit`)
+- `GET /conversations/{thread_id}` - get one session with messages
+- `PUT /conversations/{thread_id}` - rename, pin/unpin, archive/unarchive
+- `GET /conversations/{thread_id}/memory` - inspect learned session memory
+- `DELETE /conversations/{thread_id}` - delete a session
+
+### Flow
+- Frontend creates a session and stores `thread_id`.
+- Each follow-up call to `POST /chat` includes `conversation_id` (`thread_id`).
+- Backend saves user and assistant messages in `conversation_messages`.
+- Backend updates `conversation_memory` (session summary + preference hints).
+- New follow-up prompts include that memory context so answers stay consistent.
+
+## Accuracy upgrades (implemented)
+
+The chat pipeline now includes:
+- Follow-up resolver: short follow-up questions are expanded with recent user/assistant context.
+- Clarification gate: ambiguous questions return a clarification prompt instead of guessing.
+- Business glossary grounding: plugin metrics/column meanings are injected into SQL prompt.
+- Dynamic schema focus: for dynamic datasets, only most relevant columns are emphasized per question.
+- SQL verifier pass: optional second LLM pass checks SQL-question alignment and can propose safe fixes.
+- Feedback learning: recent corrected SQL feedback is reused as prompt guidance for similar questions.
+- Result sanity checks: detects suspicious numeric outputs and lowers confidence when needed.
+- Stronger conversation history: assistant history includes summary + SQL used for better follow-ups.
+- Golden intent test set: `app/tests/golden_questions.json` + `test_golden_questions.py`.
+
+### New env flags
+- `CHAT_SQL_MAX_ATTEMPTS` (default `3`) - generation/execution retry count.
+- `DYNAMIC_PROMPT_MAX_COLUMNS` (default `20`) - relevant dynamic columns to include in prompt.
+- `LLM_SQL_VERIFIER_ENABLED` (default `true`) - enable second-pass SQL verifier.- `CHAT_AUTO_CREATE_SESSION` (default `true`) - auto-create a conversation when `/chat` is called without `conversation_id`.
+
+### New endpoint
+- `GET /plugins/{plugin_id}/glossary` - returns business glossary terms used for prompt grounding.
+
+
+

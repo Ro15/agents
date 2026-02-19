@@ -13,7 +13,7 @@ def test_chat_endpoint_with_mock_llm(monkeypatch, tmp_path):
     from app import main as main_module
     main = importlib.reload(main_module)
 
-    def fake_generate_sql(_query: str):
+    def fake_generate_sql(_query: str, **_kwargs):
         return nl_to_sql.SQLGenerationResult(
             sql="SELECT 1 as value",
             answer_type="number",

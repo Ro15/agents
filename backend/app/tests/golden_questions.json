@@ -1,0 +1,14 @@
+[
+  {
+    "question": "total revenue by day in last 30 days",
+    "expected_intent": "analytics_query"
+  },
+  {
+    "question": "show me data",
+    "expected_intent": "needs_clarification"
+  },
+  {
+    "question": "write me a joke",
+    "expected_intent": "unsupported"
+  }
+]
