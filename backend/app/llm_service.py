@@ -328,6 +328,48 @@ class LLMResponse:
         }
 
 
+def generate_text_response(
+    system_prompt: str,
+    user_prompt: str,
+    config: Optional[LLMConfig] = None,
+    temperature: float = 0,
+    max_tokens: int = 300,
+) -> str:
+    """
+    Generic provider-agnostic text generation helper.
+    """
+    if config is None:
+        config = LLMConfig()
+    if not config.available:
+        return ""
+    if config.provider == "openai":
+        return _openai_chat_text(
+            config,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    model_name = config.model
+    if not model_name.startswith("models/"):
+        model_name = f"models/{model_name}"
+    model = genai.GenerativeModel(model_name)
+    gen_response = model.generate_content(
+        (system_prompt or "") + "\n\n" + (user_prompt or ""),
+        generation_config={"temperature": temperature, "max_output_tokens": max_tokens},
+    )
+    text_out = ""
+    if getattr(gen_response, "candidates", None):
+        for part in gen_response.candidates[0].content.parts:
+            if hasattr(part, "text"):
+                text_out = part.text
+                break
+    if not text_out:
+        text_out = (getattr(gen_response, "text", "") or "").strip()
+    return text_out
+
+
 def generate_narrative(
     question: str,
     sql: str,

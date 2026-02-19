@@ -655,6 +655,21 @@ export const ChatPage: React.FC = () => {
                             dataLastUpdated={(m.content as ChatResponse).data_last_updated}
                             sql={(m.content as ChatResponse).sql}
                           />
+                          {(m.content as ChatResponse).grounding?.citations &&
+                            (m.content as ChatResponse).grounding!.citations!.length > 0 && (
+                              <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                  Grounding Sources
+                                </p>
+                                <ul className="mt-1 space-y-1">
+                                  {(m.content as ChatResponse).grounding!.citations!.slice(0, 4).map((c, ci) => (
+                                    <li key={`${c.source_type}-${c.id || ci}`} className="text-xs text-slate-600">
+                                      [{c.source_type}] {c.title || c.id}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
                           {(m.content as ChatResponse).answer_type === "text" && (
                             <p className="mt-2 text-xs text-slate-500">{(m.content as ChatResponse).explanation}</p>
                           )}

@@ -6,6 +6,13 @@ import type {
   PluginMeta,
   QuestionPack,
   GlossaryTerm,
+  RAGKnowledgeDocument,
+  RAGReviewItem,
+  AgentProfile,
+  AgentGoal,
+  AgentGoalStep,
+  AgentAutomation,
+  AgentMetrics,
   JobStatus,
   ConversationThread,
   ConversationMemoryItem,
@@ -61,6 +68,8 @@ export const getPlugins = async (): Promise<PluginMeta[]> => {
 export const getPlugin = (pluginId: string) => request<any>(`/plugins/${pluginId}`);
 export const getPluginQuestions = (pluginId: string) => request<QuestionPack[]>(`/plugins/${pluginId}/questions`);
 export const getPluginGlossary = (pluginId: string) => request<{ plugin: string; glossary: GlossaryTerm[] }>(`/plugins/${pluginId}/glossary`);
+export const runRagEval = (pluginId: string, datasetId?: string) =>
+  request<any>(`/rag/eval?plugin_id=${encodeURIComponent(pluginId)}${datasetId ? `&dataset_id=${encodeURIComponent(datasetId)}` : ""}`);
 export const getPluginViews = async (pluginId: string) => {
   try {
     const res = await request<any>(`/plugins/${pluginId}/views`);
@@ -144,6 +153,7 @@ export const chat = (
   message: string,
   conversation_id?: string | null,
   conversation_history?: { role: string; content: string }[],
+  options?: { user_id?: string; confirm_action?: boolean },
 ) =>
   request<ChatResponse>("/chat", {
     method: "POST",
@@ -154,6 +164,8 @@ export const chat = (
       query: message,
       conversation_id: conversation_id || undefined,
       conversation_history: conversation_history || undefined,
+      user_id: options?.user_id || undefined,
+      confirm_action: options?.confirm_action || undefined,
     }),
   });
 
@@ -247,6 +259,176 @@ export const getConversationMemory = (threadId: string) =>
 
 export const deleteConversation = (threadId: string) =>
   request<{ status: string }>(`/conversations/${threadId}`, { method: "DELETE" });
+
+// ── RAG Knowledge & Review ───────────────────────────────────────────
+export const ingestKnowledgeDoc = (payload: {
+  plugin_id: string;
+  dataset_id?: string | null;
+  title: string;
+  content: string;
+  source_type?: string;
+  source_uri?: string | null;
+  metadata_json?: Record<string, any>;
+}) =>
+  request<RAGKnowledgeDocument>("/rag/kb", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const listKnowledgeDocs = (pluginId?: string, datasetId?: string) => {
+  const params = new URLSearchParams();
+  if (pluginId) params.set("plugin_id", pluginId);
+  if (datasetId) params.set("dataset_id", datasetId);
+  return request<RAGKnowledgeDocument[]>(`/rag/kb${params.toString() ? `?${params.toString()}` : ""}`);
+};
+
+export const searchKnowledge = (pluginId: string, question: string, datasetId?: string, limit = 8) => {
+  const params = new URLSearchParams({
+    plugin_id: pluginId,
+    question,
+    limit: String(limit),
+  });
+  if (datasetId) params.set("dataset_id", datasetId);
+  return request<any[]>(`/rag/kb/search?${params.toString()}`);
+};
+
+export const getRagReviewQueue = (pluginId?: string, status = "open", limit = 100) => {
+  const params = new URLSearchParams({ status, limit: String(limit) });
+  if (pluginId) params.set("plugin_id", pluginId);
+  return request<RAGReviewItem[]>(`/rag/review?${params.toString()}`);
+};
+
+export const resolveRagReview = (
+  reviewId: string,
+  payload: { status: "approved" | "rejected" | "resolved"; resolution_notes?: string; resolved_sql?: string; resolved_by?: string }
+) =>
+  request<{ status: string; review_id: string; new_status: string }>(`/rag/review/${reviewId}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+// ── Agent APIs ─────────────────────────────────────────────────────────
+export const getAgentProfile = (userId: string, pluginId: string) =>
+  request<AgentProfile>(`/agent/profile?user_id=${encodeURIComponent(userId)}&plugin_id=${encodeURIComponent(pluginId)}`);
+
+export const updateAgentProfile = (payload: {
+  user_id: string;
+  plugin_id: string;
+  response_style?: string;
+  preferred_chart_types?: string[];
+  preferred_kpis?: string[];
+  timezone?: string;
+  notes?: string;
+}) =>
+  request<AgentProfile>("/agent/profile", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const inferAgentProfile = (userId: string, pluginId: string, textValue: string) =>
+  request<AgentProfile>(
+    `/agent/profile/infer?user_id=${encodeURIComponent(userId)}&plugin_id=${encodeURIComponent(pluginId)}&text_value=${encodeURIComponent(textValue)}`
+  );
+
+export const createAgentGoal = (payload: {
+  plugin_id: string;
+  dataset_id?: string;
+  user_id?: string;
+  thread_id?: string;
+  goal_text: string;
+  priority?: "low" | "normal" | "high";
+}) =>
+  request<{ goal: AgentGoal; steps: AgentGoalStep[] }>("/agent/goals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const listAgentGoals = (opts?: { plugin_id?: string; user_id?: string; status?: string; limit?: number }) => {
+  const p = new URLSearchParams();
+  if (opts?.plugin_id) p.set("plugin_id", opts.plugin_id);
+  if (opts?.user_id) p.set("user_id", opts.user_id);
+  if (opts?.status) p.set("status", opts.status);
+  if (opts?.limit) p.set("limit", String(opts.limit));
+  return request<AgentGoal[]>(`/agent/goals${p.toString() ? `?${p.toString()}` : ""}`);
+};
+
+export const getAgentGoal = (goalId: string) =>
+  request<{ goal: AgentGoal; steps: AgentGoalStep[] }>(`/agent/goals/${goalId}`);
+
+export const runAgentGoal = (
+  goalId: string,
+  payload?: { auto_approve?: boolean; max_steps?: number; approval_token?: string }
+) =>
+  request<{ run: any; goal: AgentGoal; steps: AgentGoalStep[] }>(`/agent/goals/${goalId}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+
+export const approveAgentGoal = (goalId: string, approvalToken: string) =>
+  request<{ status: string; run: any }>(`/agent/goals/${goalId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approval_token: approvalToken }),
+  });
+
+export const createAgentAutomation = (payload: {
+  plugin_id: string;
+  dataset_id?: string;
+  user_id?: string;
+  title: string;
+  goal_text: string;
+  task_type?: string;
+  schedule_cron?: string;
+  config?: Record<string, any>;
+}) =>
+  request<AgentAutomation>("/agent/automations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const listAgentAutomations = (opts?: { plugin_id?: string; user_id?: string; enabled?: boolean; limit?: number }) => {
+  const p = new URLSearchParams();
+  if (opts?.plugin_id) p.set("plugin_id", opts.plugin_id);
+  if (opts?.user_id) p.set("user_id", opts.user_id);
+  if (opts?.enabled !== undefined) p.set("enabled", String(opts.enabled));
+  if (opts?.limit) p.set("limit", String(opts.limit));
+  return request<AgentAutomation[]>(`/agent/automations${p.toString() ? `?${p.toString()}` : ""}`);
+};
+
+export const updateAgentAutomation = (automationId: string, payload: Partial<AgentAutomation>) =>
+  request<AgentAutomation>(`/agent/automations/${automationId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const deleteAgentAutomation = (automationId: string) =>
+  request<{ status: string; automation_id: string }>(`/agent/automations/${automationId}`, { method: "DELETE" });
+
+export const runAutomationNow = (automationId: string) =>
+  request<{ automation: AgentAutomation; goal_id: string; run: any }>(`/agent/automations/${automationId}/run-now`, { method: "POST" });
+
+export const runDueAutomations = (pluginId?: string, limit = 10) =>
+  request<{ triggered: number; runs: any[]; run_at: string }>(
+    `/agent/automations/run-due?${new URLSearchParams({
+      ...(pluginId ? { plugin_id: pluginId } : {}),
+      limit: String(limit),
+    }).toString()}`
+  , { method: "POST" });
+
+export const getAgentMetrics = (pluginId?: string, days = 30) =>
+  request<AgentMetrics>(
+    `/agent/metrics?${new URLSearchParams({
+      ...(pluginId ? { plugin_id: pluginId } : {}),
+      days: String(days),
+    }).toString()}`
+  );
 
 // ── Query history ────────────────────────────────────────────────
 export const getQueryHistory = (opts?: { plugin_id?: string; dataset_id?: string; favorites_only?: boolean; limit?: number; offset?: number }) => {

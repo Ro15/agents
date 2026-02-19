@@ -18,6 +18,23 @@ export interface ChatResponse {
   assumptions?: string[];
   sanity_warnings?: string[];
   requires_clarification?: boolean;
+  grounding?: {
+    citations?: RAGContextCitation[];
+    retrieval_counts?: { kb: number; examples: number; schema: number };
+  };
+  selected_tools?: string[];
+  trust_reasons?: string[];
+  question_interpreted?: string;
+  requires_confirmation?: boolean;
+  required_action?: string;
+  explanation_bundle?: {
+    question_original?: string;
+    question_interpreted?: string;
+    selected_tools?: string[];
+    sql_used?: string | null;
+    trust_reasons?: string[];
+    style_applied?: string | null;
+  };
   conversation_id?: string | null;
   history_id?: string | null;
 }
@@ -114,6 +131,120 @@ export interface QuestionPack {
 export interface GlossaryTerm {
   term: string;
   definition: string;
+}
+
+export interface RAGContextCitation {
+  source_type: string;
+  id?: string;
+  title?: string;
+  score?: number;
+}
+
+export interface RAGKnowledgeDocument {
+  doc_id: string;
+  plugin_id: string;
+  dataset_id?: string | null;
+  title: string;
+  source_type: string;
+  source_uri?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  is_active?: boolean;
+}
+
+export interface RAGReviewItem {
+  review_id: string;
+  plugin_id: string;
+  dataset_id?: string | null;
+  question: string;
+  rewritten_question?: string | null;
+  proposed_sql?: string | null;
+  reason?: string | null;
+  confidence?: Confidence | string | null;
+  status: string;
+  resolution_notes?: string | null;
+  resolved_sql?: string | null;
+  resolved_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AgentProfile {
+  profile_id: string;
+  user_id: string;
+  plugin_id: string;
+  response_style: string;
+  preferred_chart_types: string[];
+  preferred_kpis: string[];
+  timezone?: string | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AgentGoalStep {
+  step_id: string;
+  goal_id: string;
+  step_order: number;
+  title: string;
+  description?: string | null;
+  tool_name: string;
+  status: string;
+  requires_approval: boolean;
+  input_payload?: Record<string, any> | null;
+  output_payload?: Record<string, any> | null;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AgentGoal {
+  goal_id: string;
+  plugin_id: string;
+  dataset_id?: string | null;
+  user_id?: string | null;
+  thread_id?: string | null;
+  title: string;
+  goal_text: string;
+  status: string;
+  priority: string;
+  requires_human_approval: boolean;
+  approval_token?: string | null;
+  working_memory?: Record<string, any> | null;
+  result_summary?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
+}
+
+export interface AgentAutomation {
+  automation_id: string;
+  plugin_id: string;
+  dataset_id?: string | null;
+  user_id?: string | null;
+  title: string;
+  goal_text: string;
+  task_type: string;
+  schedule_cron: string;
+  enabled: boolean;
+  config?: Record<string, any> | null;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AgentMetrics {
+  period_days: number;
+  queries: number;
+  feedback_items: number;
+  goals_total: number;
+  goals_completed: number;
+  goals_failed: number;
+  first_answer_accuracy_proxy: number;
+  clarification_rate: number;
+  correction_rate: number;
+  human_handoff_rate: number;
 }
 
 export interface JobStatus {

@@ -57,6 +57,20 @@ from app.routes_v2 import (
     get_conversation_history,
     get_conversation_memory_context,
 )
+from app.rag_service import (
+    rewrite_user_query,
+    retrieve_kb_chunks,
+    retrieve_rag_examples,
+    retrieve_schema_snippets,
+    rerank_contexts,
+    pack_context_for_prompt,
+    store_rag_example,
+    enqueue_review_item,
+)
+from app.agent_service import (
+    get_or_create_profile,
+    update_profile_from_text,
+)
 from cache.cache import stable_hash, cache_get, cache_set, DB_RESULT_CACHE_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -324,6 +338,75 @@ def _result_sanity_warnings(question: str, answer_type: str, answer) -> List[str
     return warnings
 
 
+def _detect_sensitive_action(question: str) -> Optional[str]:
+    q = (question or "").lower()
+    if any(k in q for k in ("schedule report", "send report", "email report", "automate report")):
+        return "schedule_report"
+    if any(k in q for k in ("export", "download csv", "download excel", "share data externally")):
+        return "export_data"
+    return None
+
+
+def _select_agent_tools(
+    question: str,
+    *,
+    has_kb: bool,
+    has_examples: bool,
+    has_schema_hits: bool,
+    has_sql: bool,
+    has_verifier: bool,
+) -> List[str]:
+    q = (question or "").lower()
+    tools: List[str] = []
+    if has_schema_hits:
+        tools.append("schema_retrieval")
+    if has_kb:
+        tools.append("kb_retrieval")
+    if has_examples:
+        tools.append("example_retrieval")
+    if has_sql:
+        tools.append("sql_generation")
+        if has_verifier:
+            tools.append("sql_verifier")
+        tools.append("sql_execution")
+    if any(k in q for k in ("anomaly", "spike", "drop", "outlier")):
+        tools.append("anomaly_scan")
+    tools.append("summary_writer")
+    seen = set()
+    ordered = []
+    for t in tools:
+        if t not in seen:
+            seen.add(t)
+            ordered.append(t)
+    return ordered
+
+
+def _build_trust_reasoning(
+    *,
+    final_confidence: str,
+    sql_verified: bool,
+    db_cache_hit: bool,
+    sanity_warnings: List[str],
+    rag_citations_count: int,
+) -> List[str]:
+    reasons = []
+    if sql_verified:
+        reasons.append("SQL verifier approved query alignment.")
+    else:
+        reasons.append("SQL verifier was not available; guardrails still enforced.")
+    reasons.append("SQL guardrails enforced read-only + scoped dataset filtering.")
+    if db_cache_hit:
+        reasons.append("Result came from cached execution payload.")
+    else:
+        reasons.append("Result executed live against the dataset.")
+    if rag_citations_count > 0:
+        reasons.append(f"Grounded using {rag_citations_count} retrieved context snippets.")
+    if sanity_warnings:
+        reasons.append("Sanity checks detected caution flags.")
+    reasons.append(f"Final confidence: {final_confidence}.")
+    return reasons
+
+
 # ── Dependencies ────────────────────────────────────────────────────────
 
 def get_db():
@@ -349,6 +432,8 @@ class ChatQuery(BaseModel):
     dataset_id: Optional[str] = None
     conversation_id: Optional[str] = None
     conversation_history: Optional[List[dict]] = None
+    user_id: Optional[str] = None
+    confirm_action: Optional[bool] = False
 
 
 class PluginSwitchRequest(BaseModel):
@@ -648,6 +733,21 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         ds = get_dataset_or_400(db, dataset_id, active_plugin.plugin_name)
         dataset_version = ds.version
         is_dynamic = getattr(ds, "schema_type", "static") == "dynamic"
+        user_profile = None
+        profile_guidance = ""
+        if chat_query.user_id:
+            try:
+                user_profile = update_profile_from_text(db, chat_query.user_id, active_plugin.plugin_name, chat_query.query)
+                if not user_profile:
+                    user_profile = get_or_create_profile(db, chat_query.user_id, active_plugin.plugin_name)
+                if user_profile:
+                    profile_guidance = (
+                        f"Preferred response style: {user_profile.response_style}. "
+                        f"Preferred KPIs: {', '.join(user_profile.preferred_kpis or [])}. "
+                        f"Preferred chart types: {', '.join(user_profile.preferred_chart_types or [])}."
+                    )
+            except Exception as e:
+                logger.debug(f"Failed loading user profile context: {e}")
 
         # Multi-turn: resolve conversation history
         conversation_history = chat_query.conversation_history or []
@@ -677,6 +777,9 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 logger.warning(f"Auto-create conversation thread failed: {e}")
 
         resolved_query = _resolve_followup_question(chat_query.query, conversation_history)
+        rewritten_query = rewrite_user_query(resolved_query, conversation_history)
+        if rewritten_query:
+            resolved_query = rewritten_query
         clarification = _maybe_clarification_response(
             resolved_query, conversation_history, active_plugin.plugin_name, last_updated
         )
@@ -696,6 +799,25 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     logger.warning(f"Conversation persistence failed for clarification path: {e}")
             clarification["conversation_id"] = str(thread_id) if thread_id else None
             return clarification
+
+        sensitive_action = _detect_sensitive_action(resolved_query)
+        if sensitive_action and not bool(chat_query.confirm_action):
+            return {
+                "answer_type": "text",
+                "answer": (
+                    "This action needs explicit approval before I proceed. "
+                    "Resend with `confirm_action=true` if you want me to continue."
+                ),
+                "explanation": f"approval_required:{sensitive_action}",
+                "sql": None,
+                "data_last_updated": last_updated,
+                "confidence": "low",
+                "plugin": active_plugin.plugin_name,
+                "assumptions": [],
+                "requires_confirmation": True,
+                "required_action": sensitive_action,
+                "conversation_id": str(thread_id) if thread_id else None,
+            }
 
         learning_context = _build_feedback_learning_context(db, active_plugin.plugin_name, resolved_query)
 
@@ -765,6 +887,53 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     dynamic_time_column = cp.column_name
                     break
 
+        # RAG retrieval: KB + examples + schema snippets.
+        rag_limit = int(os.getenv("RAG_TOP_K", "6"))
+        kb_hits = retrieve_kb_chunks(
+            db,
+            plugin_id=active_plugin.plugin_name,
+            dataset_id=str(ds.dataset_id),
+            question=resolved_query,
+            limit=rag_limit,
+        )
+        example_hits = retrieve_rag_examples(
+            db,
+            plugin_id=active_plugin.plugin_name,
+            dataset_id=str(ds.dataset_id),
+            question=resolved_query,
+            limit=max(2, min(6, rag_limit)),
+        )
+        schema_hits = retrieve_schema_snippets(
+            active_plugin,
+            question=resolved_query,
+            dynamic_columns=(dynamic_cols if is_dynamic else None),
+            dynamic_table=(dyn_table if is_dynamic else None),
+            limit=max(4, rag_limit),
+        )
+        rag_context_items = rerank_contexts(resolved_query, kb_hits + example_hits + schema_hits)
+        rag_context_text, rag_citations = pack_context_for_prompt(
+            rag_context_items,
+            max_chars=int(os.getenv("RAG_CONTEXT_MAX_CHARS", "4200")),
+        )
+        rag_focus_columns = sorted({
+            str(item.get("metadata", {}).get("column"))
+            for item in schema_hits
+            if isinstance(item.get("metadata"), dict) and item.get("metadata", {}).get("column")
+        })
+        combined_learning_context = learning_context
+        if rag_context_text:
+            combined_learning_context = (
+                (combined_learning_context + "\n\n" if combined_learning_context else "")
+                + "Retrieved grounding context:\n"
+                + rag_context_text
+            )
+        if profile_guidance:
+            combined_learning_context = (
+                (combined_learning_context + "\n\n" if combined_learning_context else "")
+                + "User persona preferences:\n"
+                + profile_guidance
+            )
+
         def _serialize_val(v):
             return str(v) if isinstance(v, UUID) else v
 
@@ -785,7 +954,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     dynamic_context,
                     cfg,
                     feedback=feedback,
-                    extra_context=learning_context,
+                    extra_context=combined_learning_context,
                     timezone=os.getenv("LLM_TIMEZONE", "UTC"),
                     today_iso=today_iso,
                     conversation_history=conversation_history,
@@ -819,8 +988,9 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 dataset_version=dataset_version,
                 conversation_history=conversation_history,
                 feedback=feedback,
-                learning_context=learning_context,
+                learning_context=combined_learning_context,
                 business_glossary=static_glossary,
+                focus_columns=rag_focus_columns,
                 use_cache=use_cache,
             )
 
@@ -830,6 +1000,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         db_cache_hit = False
         db_key = ""
         execution_feedback = None
+        sql_verifier_approved = False
         max_exec_attempts = int(os.getenv("CHAT_SQL_MAX_ATTEMPTS", "3"))
 
         for exec_attempt in range(max_exec_attempts):
@@ -845,7 +1016,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     "allowed_tables": list(active_plugin.get_allowed_tables()) if not is_dynamic else list(dynamic_context.allowed_tables),
                     "allowed_columns": list(active_plugin.get_allowed_columns()) if not is_dynamic else list(dynamic_context.allowed_columns),
                     "time_column": active_plugin.primary_time_column() if not is_dynamic else dynamic_time_column,
-                    "learning_examples": learning_context,
+                    "learning_examples": combined_learning_context[:4000] if combined_learning_context else "",
                 }
                 continue
 
@@ -912,6 +1083,8 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                             generated_sql = corrected_sql
                         else:
                             raise ValueError(f"sql_verifier_rejected: {reason}")
+                    else:
+                        sql_verifier_approved = True
 
                 if is_dynamic:
                     scoped_sql = generated_sql
@@ -955,7 +1128,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     "allowed_tables": list(active_plugin.get_allowed_tables()) if not is_dynamic else list(dynamic_context.allowed_tables),
                     "allowed_columns": list(active_plugin.get_allowed_columns()) if not is_dynamic else list(dynamic_context.allowed_columns),
                     "time_column": active_plugin.primary_time_column() if not is_dynamic else dynamic_time_column,
-                    "learning_examples": learning_context,
+                    "learning_examples": combined_learning_context[:4000] if combined_learning_context else "",
                 }
 
         if result_payload is None:
@@ -1025,6 +1198,39 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             logger.warning("Narrative claim-check failed; falling back to deterministic summary.")
             narrative = ""
 
+        if user_profile:
+            if (user_profile.response_style or "") == "concise":
+                if narrative:
+                    narrative = narrative[:240]
+                summary = summary[:180]
+            elif (user_profile.response_style or "") == "detailed":
+                if generation.assumptions:
+                    summary = (summary + " " if summary else "") + "Assumptions: " + "; ".join(generation.assumptions[:3])
+
+        selected_tools = _select_agent_tools(
+            resolved_query,
+            has_kb=len(kb_hits) > 0,
+            has_examples=len(example_hits) > 0,
+            has_schema_hits=len(schema_hits) > 0,
+            has_sql=bool(scoped_sql),
+            has_verifier=os.getenv("LLM_SQL_VERIFIER_ENABLED", "true").lower() in {"1", "true", "yes"},
+        )
+        trust_reasons = _build_trust_reasoning(
+            final_confidence=final_confidence,
+            sql_verified=sql_verifier_approved,
+            db_cache_hit=db_cache_hit,
+            sanity_warnings=sanity_warnings,
+            rag_citations_count=len(rag_citations),
+        )
+        explanation_bundle = {
+            "question_original": chat_query.query,
+            "question_interpreted": resolved_query,
+            "selected_tools": selected_tools,
+            "sql_used": scoped_sql,
+            "trust_reasons": trust_reasons,
+            "style_applied": user_profile.response_style if user_profile else None,
+        }
+
         # Record query history
         history_id = None
         try:
@@ -1036,6 +1242,39 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         except Exception as e:
             logger.warning(f"Query history recording failed: {e}")
 
+        # Post-execution learning loop.
+        try:
+            if scoped_sql and final_confidence in {"high", "medium"}:
+                store_rag_example(
+                    db=db,
+                    plugin_id=active_plugin.plugin_name,
+                    dataset_id=str(ds.dataset_id),
+                    question=chat_query.query,
+                    rewritten_question=resolved_query,
+                    sql=scoped_sql,
+                    answer_summary=narrative or summary,
+                    quality_score=0.9 if final_confidence == "high" else 0.75,
+                    source="auto_success",
+                )
+            elif final_confidence == "low":
+                enqueue_review_item(
+                    db=db,
+                    plugin_id=active_plugin.plugin_name,
+                    dataset_id=str(ds.dataset_id),
+                    question=chat_query.query,
+                    rewritten_question=resolved_query,
+                    proposed_sql=scoped_sql,
+                    reason="low_confidence_after_sanity",
+                    confidence=final_confidence,
+                    context_payload={
+                        "sanity_warnings": sanity_warnings,
+                        "citations": rag_citations,
+                        "summary": summary,
+                    },
+                )
+        except Exception as e:
+            logger.warning(f"Post-execution learning loop failed: {e}")
+
         response_payload = {
             "answer_type": answer_type,
             "answer": answer,
@@ -1046,6 +1285,8 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             "confidence": final_confidence,
             "plugin": active_plugin.plugin_name,
             "assumptions": generation.assumptions + sanity_warnings,
+            "grounding": {"citations": rag_citations},
+            "explanation_bundle": explanation_bundle,
         }
 
         # Multi-turn: persist messages
@@ -1077,9 +1318,21 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             "data_last_updated": last_updated, "confidence": final_confidence,
             "plugin": active_plugin.plugin_name, "assumptions": generation.assumptions + sanity_warnings,
             "dataset_filter_enforced": True,
+            "selected_tools": selected_tools,
+            "trust_reasons": trust_reasons,
+            "question_interpreted": resolved_query,
+            "explanation_bundle": explanation_bundle,
             "conversation_id": str(thread_id) if thread_id else None,
             "history_id": str(history_id) if history_id else None,
             "sanity_warnings": sanity_warnings,
+            "grounding": {
+                "citations": rag_citations,
+                "retrieval_counts": {
+                    "kb": len(kb_hits),
+                    "examples": len(example_hits),
+                    "schema": len(schema_hits),
+                },
+            },
             "cache": {
                 "llm_sql": {"hit": generation.cache_info.get("llm_cache_hit", False), "key": generation.cache_info.get("llm_cache_key")},
                 "db_result": {"hit": db_cache_hit, "key": db_key[:8]},
@@ -1089,6 +1342,20 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
     except HTTPException:
         raise
     except ValueError as e:
+        try:
+            enqueue_review_item(
+                db=db,
+                plugin_id=chat_query.plugin,
+                dataset_id=chat_query.dataset_id,
+                question=chat_query.query,
+                rewritten_question=locals().get("resolved_query"),
+                proposed_sql=generated_sql,
+                reason=f"value_error: {e}",
+                confidence="low",
+                context_payload={"stage": "value_error"},
+            )
+        except Exception:
+            pass
         record_audit_log(
             db, plugin_id=chat_query.plugin, dataset_id=chat_query.dataset_id,
             user_question=chat_query.query, intent="analytics_query", generated_sql=generated_sql,
@@ -1097,6 +1364,20 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         )
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        try:
+            enqueue_review_item(
+                db=db,
+                plugin_id=chat_query.plugin,
+                dataset_id=chat_query.dataset_id,
+                question=chat_query.query,
+                rewritten_question=locals().get("resolved_query"),
+                proposed_sql=generated_sql,
+                reason=f"runtime_error: {e}",
+                confidence="low",
+                context_payload={"stage": "runtime_exception"},
+            )
+        except Exception:
+            pass
         logger.error(f"Error during chat processing: {e}")
         record_audit_log(
             db, plugin_id=chat_query.plugin, dataset_id=chat_query.dataset_id,

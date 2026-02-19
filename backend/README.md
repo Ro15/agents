@@ -129,3 +129,62 @@ The chat pipeline now includes:
 
 
 
+
+## RAG system (implemented)
+
+### New capabilities
+- Knowledge-base ingestion and chunk retrieval (business docs, SOPs, glossary notes).
+- Schema RAG retrieval before SQL generation.
+- Example RAG retrieval from learned query examples and corrected feedback.
+- Query rewrite step for follow-up/elliptical questions.
+- Context reranking + token-budget context packing.
+- Grounded answers with citations (`grounding.citations`) in `/chat` response.
+- Post-execution learning loop: successful Q->SQL pairs are auto-added as RAG examples.
+- Human review queue for low-confidence/failure cases.
+- Lightweight eval framework (`/rag/eval`) using golden question set.
+
+### New RAG endpoints
+- `POST /rag/kb` - ingest a knowledge document.
+- `GET /rag/kb` - list ingested knowledge documents.
+- `GET /rag/kb/search` - retrieve top knowledge chunks for a question.
+- `GET /rag/examples` - list/retrieve learned examples (optionally by question similarity).
+- `GET /rag/review` - list human review queue items.
+- `POST /rag/review/{review_id}/resolve` - resolve a review item and optionally promote approved SQL to examples.
+- `GET /rag/eval` - run lightweight evaluation on golden questions.
+
+### New RAG env flags
+- `RAG_QUERY_REWRITE_ENABLED` (default `true`) - enable rewrite step.
+- `RAG_TOP_K` (default `6`) - top retrieved items used for context.
+- `RAG_CONTEXT_MAX_CHARS` (default `4200`) - packed context size budget.
+- `RAG_CHUNK_SIZE` (default `900`) - KB chunk size.
+- `RAG_CHUNK_OVERLAP` (default `120`) - KB chunk overlap.
+- `RAG_URL_FETCH_TIMEOUT_SECONDS` (default `10`) - timeout when ingesting KB from `source_uri`.
+
+## Agent mode (implemented)
+
+### What is added
+- User profile memory per plugin (`response_style`, KPI preferences, chart preferences).
+- Goal planning with multi-step tool execution (schema, KB, examples, SQL, verification, execution, summary).
+- Approval checkpoints for risky SQL before execution.
+- Automation records for scheduled/recurring analyst goals.
+- Agent quality metrics endpoint (accuracy proxy, clarification rate, correction rate, handoff rate).
+
+### New agent endpoints
+- `GET /agent/profile`
+- `PUT /agent/profile`
+- `POST /agent/profile/infer`
+- `POST /agent/goals`
+- `GET /agent/goals`
+- `GET /agent/goals/{goal_id}`
+- `POST /agent/goals/{goal_id}/run`
+- `POST /agent/goals/{goal_id}/approve`
+- `POST /agent/automations`
+- `GET /agent/automations`
+- `PUT /agent/automations/{automation_id}`
+- `DELETE /agent/automations/{automation_id}`
+- `POST /agent/automations/{automation_id}/run-now`
+- `POST /agent/automations/run-due`
+- `GET /agent/metrics`
+
+### Optional agent env flag
+- `AGENT_LLM_PLANNER_ENABLED` (default `true`) - use LLM to generate plan steps, fallback to heuristic planner on error.

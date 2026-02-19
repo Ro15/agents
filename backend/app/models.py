@@ -288,6 +288,149 @@ class LLMCostLog(Base):
     created_at = Column(TIMESTAMP, server_default=text("now()"))
 
 
+# ── RAG knowledge base / learning ───────────────────────────────────────
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+    doc_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    plugin_id = Column(String, index=True, nullable=False)
+    dataset_id = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    source_type = Column(String, nullable=False, server_default=text("'manual'"))  # manual|url|file|wiki|dbt
+    source_uri = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+    metadata_json = Column(JSON_TYPE, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
+    is_active = Column(Boolean, server_default=text("true"))
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    chunk_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    doc_id = Column(UUID_TYPE(as_uuid=True), ForeignKey("knowledge_documents.doc_id", ondelete="CASCADE"), index=True)
+    plugin_id = Column(String, index=True, nullable=False)
+    dataset_id = Column(String, nullable=True, index=True)
+    chunk_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    token_set = Column(JSON_TYPE, nullable=True)  # lightweight lexical index
+    metadata_json = Column(JSON_TYPE, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
+class RAGExample(Base):
+    __tablename__ = "rag_examples"
+    example_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    plugin_id = Column(String, index=True, nullable=False)
+    dataset_id = Column(String, nullable=True, index=True)
+    question = Column(Text, nullable=False)
+    rewritten_question = Column(Text, nullable=True)
+    sql = Column(Text, nullable=False)
+    answer_summary = Column(Text, nullable=True)
+    quality_score = Column(NUMERIC, nullable=True)  # 0..1
+    source = Column(String, nullable=False, server_default=text("'auto_success'"))  # auto_success|feedback|human_approved
+    tags = Column(JSON_TYPE, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
+    is_active = Column(Boolean, server_default=text("true"))
+
+
+class HumanReviewQueue(Base):
+    __tablename__ = "human_review_queue"
+    review_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    plugin_id = Column(String, index=True, nullable=False)
+    dataset_id = Column(String, nullable=True, index=True)
+    question = Column(Text, nullable=False)
+    rewritten_question = Column(Text, nullable=True)
+    proposed_sql = Column(Text, nullable=True)
+    reason = Column(Text, nullable=True)
+    confidence = Column(String, nullable=True)
+    context_payload = Column(JSON_TYPE, nullable=True)
+    status = Column(String, nullable=False, server_default=text("'open'"))  # open|approved|rejected|resolved
+    resolution_notes = Column(Text, nullable=True)
+    resolved_sql = Column(Text, nullable=True)
+    resolved_by = Column(String, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
+class AgentUserProfile(Base):
+    __tablename__ = "agent_user_profiles"
+    profile_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(String, nullable=False, index=True)
+    plugin_id = Column(String, nullable=False, index=True)
+    response_style = Column(String, nullable=False, server_default=text("'concise'"))  # concise|balanced|detailed
+    preferred_chart_types = Column(JSON_TYPE, nullable=True)
+    preferred_kpis = Column(JSON_TYPE, nullable=True)
+    timezone = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
+class AgentGoal(Base):
+    __tablename__ = "agent_goals"
+    goal_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    plugin_id = Column(String, nullable=False, index=True)
+    dataset_id = Column(String, nullable=True, index=True)
+    user_id = Column(String, nullable=True, index=True)
+    thread_id = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    goal_text = Column(Text, nullable=False)
+    status = Column(String, nullable=False, server_default=text("'open'"))  # open|in_progress|waiting_approval|completed|failed|cancelled
+    priority = Column(String, nullable=False, server_default=text("'normal'"))  # low|normal|high
+    requires_human_approval = Column(Boolean, server_default=text("false"))
+    approval_token = Column(String, nullable=True, unique=True, index=True)
+    plan_version = Column(Integer, nullable=False, server_default=text("1"))
+    working_memory = Column(JSON_TYPE, nullable=True)
+    result_summary = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
+    completed_at = Column(TIMESTAMP, nullable=True)
+
+
+class AgentPlanStep(Base):
+    __tablename__ = "agent_plan_steps"
+    step_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    goal_id = Column(UUID_TYPE(as_uuid=True), ForeignKey("agent_goals.goal_id", ondelete="CASCADE"), nullable=False, index=True)
+    step_order = Column(Integer, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    tool_name = Column(String, nullable=False)
+    status = Column(String, nullable=False, server_default=text("'pending'"))  # pending|running|completed|failed|blocked|skipped
+    requires_approval = Column(Boolean, server_default=text("false"))
+    input_payload = Column(JSON_TYPE, nullable=True)
+    output_payload = Column(JSON_TYPE, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
+class AgentAutomation(Base):
+    __tablename__ = "agent_automations"
+    automation_id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    plugin_id = Column(String, nullable=False, index=True)
+    dataset_id = Column(String, nullable=True, index=True)
+    user_id = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    goal_text = Column(Text, nullable=False)
+    task_type = Column(String, nullable=False, server_default=text("'monitor'"))  # monitor|daily_brief|anomaly_alert
+    schedule_cron = Column(String, nullable=False, server_default=text("'0 8 * * *'"))
+    enabled = Column(Boolean, server_default=text("true"))
+    config = Column(JSON_TYPE, nullable=True)
+    last_run_at = Column(TIMESTAMP, nullable=True)
+    next_run_at = Column(TIMESTAMP, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+    updated_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
 Index("idx_conversation_threads_updated", ConversationThread.updated_at)
 Index("idx_conversation_threads_plugin_dataset", ConversationThread.plugin_id, ConversationThread.dataset_id)
 Index("idx_conversation_memory_thread_type", ConversationMemory.thread_id, ConversationMemory.memory_type)
+Index("idx_knowledge_chunks_plugin_dataset", KnowledgeChunk.plugin_id, KnowledgeChunk.dataset_id)
+Index("idx_rag_examples_plugin_dataset", RAGExample.plugin_id, RAGExample.dataset_id)
+Index("idx_review_queue_plugin_status", HumanReviewQueue.plugin_id, HumanReviewQueue.status)
+Index("idx_agent_profile_user_plugin", AgentUserProfile.user_id, AgentUserProfile.plugin_id)
+Index("idx_agent_goals_plugin_status", AgentGoal.plugin_id, AgentGoal.status)
+Index("idx_agent_steps_goal_order", AgentPlanStep.goal_id, AgentPlanStep.step_order)
+Index("idx_agent_automation_plugin_enabled", AgentAutomation.plugin_id, AgentAutomation.enabled)

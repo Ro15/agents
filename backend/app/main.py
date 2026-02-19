@@ -113,6 +113,8 @@ app.add_middleware(
 # Register routers
 from app.routes_core import router as core_router  # noqa: E402
 from app.routes_v2 import router as v2_router      # noqa: E402
+from app.routes_rag import router as rag_router    # noqa: E402
+from app.routes_agent import router as agent_router  # noqa: E402
 
 # Share insight engines with the core router module
 from app import routes_core  # noqa: E402
@@ -120,3 +122,5 @@ routes_core.INSIGHT_ENGINES = INSIGHT_ENGINES
 
 app.include_router(core_router)
 app.include_router(v2_router)
+app.include_router(rag_router)
+app.include_router(agent_router)
