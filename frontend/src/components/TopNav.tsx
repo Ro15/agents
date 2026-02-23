@@ -28,8 +28,8 @@ export const TopNav: React.FC = () => {
           <NavLink to="/plugins" className={navItemClass}>
             Plugins
           </NavLink>
-          <NavLink to="/datasets" className={navItemClass}>
-            Datasets
+          <NavLink to="/data-sources" className={navItemClass}>
+            Data Sources
           </NavLink>
           <NavLink to="/chat" className={navItemClass}>
             Chat

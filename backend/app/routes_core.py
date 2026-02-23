@@ -72,8 +72,37 @@ from app.agent_service import (
     update_profile_from_text,
 )
 from cache.cache import stable_hash, cache_get, cache_set, DB_RESULT_CACHE_TTL_SECONDS
+from app.ws_manager import manager as ws_manager
+from app.audit_service import log_event as audit_log_event
+from app.pii_classifier import pii_labels_from_profiles, mask_rows
+from app.prompt_optimizer import get_prompt_rules
+from app.forecast_engine import is_forecast_question, detect_horizon, run_forecast
+from app.cohort_engine import detect_cohort_intent, build_cohort_sql, auto_column_map
+from app import telemetry
 
 logger = logging.getLogger(__name__)
+
+
+async def _trigger_insights_and_notify(plugin_id: str, dataset_id: str) -> None:
+    """Background task: run InsightEngine and broadcast WebSocket notification on completion."""
+    try:
+        db = SessionLocal()
+        try:
+            ie = get_insight_engine_for_plugin(plugin_id)
+            generated = ie.run_all_insights(db, dataset_id=dataset_id)
+            run_id = persist_generated_insights(db, generated, plugin_id, dataset_id) if generated else None
+            await ws_manager.broadcast({
+                "type": "insights_ready",
+                "plugin_id": plugin_id,
+                "dataset_id": dataset_id,
+                "count": len(generated),
+                "run_id": str(run_id) if run_id else None,
+            })
+            logger.info(f"Auto-insights complete for dataset {dataset_id}: {len(generated)} insights")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Auto-insights background task failed for {dataset_id}: {e}")
 
 router = APIRouter()
 
@@ -562,6 +591,10 @@ async def upload_sales_data(
         meta = dataset_to_meta(dataset_obj)
         meta["message"] = f"Successfully uploaded and ingested {len(df)} rows from {file.filename}."
         meta["ingested_at"] = ingestion_record.ingested_at.isoformat() if ingestion_record.ingested_at else None
+
+        if background_tasks is not None:
+            background_tasks.add_task(_trigger_insights_and_notify, plugin_id, str(dataset_obj.dataset_id))
+
         return meta
     except HTTPException:
         raise
@@ -580,6 +613,7 @@ async def upload_file_universal(
     dataset_id: Optional[str] = Query(None),
     plugin_id: Optional[str] = Query("default"),
     sheet_name: Optional[str] = Query(None),
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -631,6 +665,14 @@ async def upload_file_universal(
             for cs in result.column_schemas
         ]
         meta["load_errors"] = result.load_errors
+
+        if background_tasks is not None:
+            background_tasks.add_task(
+                _trigger_insights_and_notify,
+                plugin_id or "default",
+                str(result.dataset.dataset_id),
+            )
+
         return meta
 
     except HTTPException:
@@ -934,6 +976,37 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                 + profile_guidance
             )
 
+        # Prompt optimizer: inject learned SQL correction rules
+        try:
+            _prompt_rules = get_prompt_rules(db, active_plugin.plugin_name)
+            if _prompt_rules:
+                combined_learning_context = (
+                    (combined_learning_context + "\n\n" if combined_learning_context else "")
+                    + "SQL correction rules (apply strictly):\n"
+                    + _prompt_rules
+                )
+        except Exception as _pre:
+            logger.warning(f"Prompt rules injection failed: {_pre}")
+
+        # Federation: inject cross-dataset join hints for dynamic datasets
+        if is_dynamic:
+            try:
+                from app.federation_service import get_federation_hints, get_federation_schema_context
+                _fed_hints = get_federation_hints(active_plugin.plugin_name, db)
+                if _fed_hints:
+                    _fed_ctx = get_federation_schema_context(_fed_hints)
+                    if _fed_ctx:
+                        combined_learning_context = (
+                            (combined_learning_context + "\n\n" if combined_learning_context else "")
+                            + _fed_ctx
+                        )
+            except Exception as _fed_err:
+                logger.debug(f"Federation context skipped: {_fed_err}")
+
+        # Forecast intent detection: if user wants a prediction, mark for post-processing
+        _is_forecast = is_forecast_question(resolved_query)
+        _forecast_horizon = detect_horizon(resolved_query) if _is_forecast else 30
+
         def _serialize_val(v):
             return str(v) if isinstance(v, UUID) else v
 
@@ -1106,6 +1179,21 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     result_payload = _serialize_payload(cached)
                     break
 
+                # EXPLAIN Guard: warn on estimated row count > 500K
+                _explain_warn = None
+                try:
+                    if os.getenv("EXPLAIN_GUARD_ENABLED", "true").lower() in ("1", "true", "yes"):
+                        with db.get_bind().connect() as _econn:
+                            _eplan = _econn.execute(text(f"EXPLAIN (FORMAT JSON) {sql_norm}"), params).fetchone()
+                            if _eplan:
+                                _plan_json = json.loads(_eplan[0])
+                                _est_rows = _plan_json[0]["Plan"].get("Plan Rows", 0) if isinstance(_plan_json, list) else 0
+                                if _est_rows > int(os.getenv("EXPLAIN_GUARD_ROW_LIMIT", "500000")):
+                                    _explain_warn = f"Large scan detected ({_est_rows:,} estimated rows). Query may be slow."
+                                    logger.warning(f"EXPLAIN Guard: {_explain_warn} sql={sql_norm[:120]}")
+                except Exception as _eg:
+                    logger.debug(f"EXPLAIN guard skipped: {_eg}")
+
                 with db.get_bind().connect() as conn:
                     conn.execute(text("SET statement_timeout = '5s';"))
                     rows = conn.execute(text(sql_norm), params).fetchall()
@@ -1119,7 +1207,7 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
                     }
                 cache_set("db_result", db_key, _serialize_payload(result_payload), DB_RESULT_CACHE_TTL_SECONDS)
                 break
-            except (SQLGuardError, Exception) as e:
+            except (SQLGuardError, Exception) as e:  # noqa: BLE001
                 logger.warning(f"SQL attempt {exec_attempt + 1} failed: {e}")
                 if exec_attempt + 1 >= max_exec_attempts:
                     raise
@@ -1134,6 +1222,16 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         if result_payload is None:
             raise ValueError("SQL execution failed after retries")
 
+        # PII masking on dynamic dataset results
+        pii_columns_masked: list = []
+        if is_dynamic and result_payload.get("type") == "table" and result_payload.get("rows"):
+            try:
+                _pii_lbl = pii_labels_from_profiles(col_profiles)
+                if _pii_lbl:
+                    result_payload["rows"], pii_columns_masked = mask_rows(result_payload["rows"], _pii_lbl)
+            except Exception as _pii_err:
+                logger.warning(f"PII masking skipped: {_pii_err}")
+
         derived_answer_type = "number" if result_payload["type"] == "scalar" else "table"
         answer_type = generation.answer_type or derived_answer_type
         # Keep response shape consistent with executed SQL payload.
@@ -1147,7 +1245,40 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         else:
             answer = result_payload["rows"]
 
-        sanity_warnings = _result_sanity_warnings(resolved_query, answer_type, answer)
+        # Forecasting: if intent detected and we have tabular time-series data, run forecast
+        forecast_payload = None
+        if _is_forecast and answer_type == "table" and isinstance(answer, list) and len(answer) >= 7:
+            try:
+                _time_col = next(
+                    (k for k in (answer[0].keys() if answer else [])
+                     if any(kw in k.lower() for kw in ("date", "day", "month", "week", "year", "time", "period"))),
+                    None,
+                )
+                _num_col = next(
+                    (k for k in (answer[0].keys() if answer else [])
+                     if k != _time_col and isinstance(answer[0].get(k), (int, float))),
+                    None,
+                )
+                if _time_col and _num_col:
+                    _dates = [str(r.get(_time_col, "")) for r in answer]
+                    _vals = [float(r.get(_num_col, 0)) for r in answer]
+                    _fc_result = run_forecast(_dates, _vals, horizon=_forecast_horizon)
+                    if _fc_result:
+                        forecast_payload = {
+                            "method": _fc_result.method,
+                            "horizon": _fc_result.horizon,
+                            "r_squared": _fc_result.r_squared,
+                            "predictions": [
+                                {"date": p.date, "value": p.value, "lower": p.lower, "upper": p.upper}
+                                for p in _fc_result.predictions
+                            ],
+                            "message": _fc_result.message,
+                        }
+                        answer_type = "forecast"
+            except Exception as _fc_err:
+                logger.warning(f"Forecast post-processing skipped: {_fc_err}")
+
+        sanity_warnings = _result_sanity_warnings(resolved_query, answer_type if answer_type != "forecast" else "table", answer)
         confidence_score = _confidence_to_score(generation.confidence)
         if sanity_warnings:
             confidence_score -= 1
@@ -1159,6 +1290,28 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             user_question=chat_query.query, intent=generation.intent, generated_sql=scoped_sql,
             sql_valid=True, execution_ms=exec_ms, rows_returned=result_payload["row_count"],
             confidence=final_confidence, failure_reason=None, model_name=generation.model_name,
+        )
+        # Immutable audit log (SOC 2 / GDPR)
+        try:
+            audit_log_event(
+                db,
+                event_type="query",
+                plugin_id=active_plugin.plugin_name,
+                dataset_id=str(ds.dataset_id) if ds else dataset_id,
+                sql_executed=scoped_sql,
+                rows_returned=result_payload["row_count"],
+                duration_ms=exec_ms,
+                pii_columns_accessed=pii_columns_masked if pii_columns_masked else None,
+            )
+        except Exception as _ae:
+            logger.warning(f"Immutable audit log write failed: {_ae}")
+        # Telemetry
+        telemetry.record_chat_request(
+            plugin_id=active_plugin.plugin_name,
+            model=generation.model_name or "unknown",
+            duration_ms=exec_ms,
+            cache_hit=db_cache_hit,
+            confidence=final_confidence,
         )
 
         # Chart hint
@@ -1312,11 +1465,14 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
         except Exception:
             pass
 
+        _assumptions_out = generation.assumptions + sanity_warnings
+        if locals().get("_explain_warn"):
+            _assumptions_out = [locals()["_explain_warn"]] + _assumptions_out
         return {
             "answer_type": answer_type, "answer": answer, "explanation": "Validated SQL executed against dataset.",
             "summary": summary, "narrative": narrative, "chart_hint": chart_hint, "sql": scoped_sql,
             "data_last_updated": last_updated, "confidence": final_confidence,
-            "plugin": active_plugin.plugin_name, "assumptions": generation.assumptions + sanity_warnings,
+            "plugin": active_plugin.plugin_name, "assumptions": _assumptions_out,
             "dataset_filter_enforced": True,
             "selected_tools": selected_tools,
             "trust_reasons": trust_reasons,
@@ -1325,6 +1481,8 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
             "conversation_id": str(thread_id) if thread_id else None,
             "history_id": str(history_id) if history_id else None,
             "sanity_warnings": sanity_warnings,
+            "pii_columns_masked": pii_columns_masked,
+            "forecast": forecast_payload,
             "grounding": {
                 "citations": rag_citations,
                 "retrieval_counts": {
@@ -1342,6 +1500,49 @@ def chat_endpoint(chat_query: ChatQuery, request: Request = None, db: Session = 
     except HTTPException:
         raise
     except ValueError as e:
+        err_str = str(e)
+
+        # Verifier exhausted all retries due to schema mismatch (e.g. column doesn't exist).
+        # Return a friendly clarification response instead of a raw 400.
+        if "sql_verifier_rejected" in err_str:
+            _ap = locals().get("active_plugin")
+            _is_dyn = locals().get("is_dynamic", False)
+            _col_profiles = locals().get("col_profiles", [])
+            _thread_id = locals().get("thread_id")
+            if _is_dyn and _col_profiles:
+                available_cols = sorted({cp.column_name for cp in _col_profiles})
+            elif _ap:
+                available_cols = sorted(getattr(_ap, "get_allowed_columns", lambda: set())() or set())
+            else:
+                available_cols = []
+            col_hint = (
+                f" Your dataset has these columns: **{', '.join(available_cols[:20])}**."
+                if available_cols
+                else ""
+            )
+            answer_text = (
+                f"I couldn't answer that with the available data.{col_hint} "
+                "Please rephrase your question using a column that exists in your dataset."
+            )
+            record_audit_log(
+                db, plugin_id=chat_query.plugin, dataset_id=chat_query.dataset_id,
+                user_question=chat_query.query, intent="analytics_query", generated_sql=generated_sql,
+                sql_valid=False, execution_ms=int((time.time() - t0) * 1000),
+                rows_returned=None, confidence="low", failure_reason=err_str, model_name=None,
+            )
+            return {
+                "answer_type": "text",
+                "answer": answer_text,
+                "explanation": err_str,
+                "sql": None,
+                "data_last_updated": last_updated,
+                "confidence": "low",
+                "plugin": _ap.plugin_name if _ap else chat_query.plugin,
+                "assumptions": [],
+                "requires_clarification": True,
+                "conversation_id": str(_thread_id) if _thread_id else None,
+            }
+
         try:
             enqueue_review_item(
                 db=db,

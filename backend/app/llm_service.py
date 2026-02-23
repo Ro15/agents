@@ -20,6 +20,40 @@ import google.generativeai as genai
 logger = logging.getLogger(__name__)
 
 
+# ── LLM Router — Task 1.3 ────────────────────────────────────────────────
+
+_COMPLEX_KEYWORDS = [
+    "compare", "breakdown", "segment", "cohort", "retention", "funnel",
+    "vs ", "versus", "year over year", "month over month", "rank", "ntile",
+    "running total", "cumulative", "correlation", "forecast", "predict",
+]
+_MEDIUM_KEYWORDS = [
+    "join", "group by", "window", "partition", "case when",
+    "count distinct", "percentage", "rate", "ratio", "trend",
+]
+
+_SIMPLE_MODEL = os.getenv("LLM_SIMPLE_MODEL", os.getenv("LLM_MODEL", "gemini-2.0-flash"))
+_MEDIUM_MODEL = os.getenv("LLM_MEDIUM_MODEL", os.getenv("LLM_MODEL", "gemini-2.0-flash"))
+_COMPLEX_MODEL = os.getenv("LLM_COMPLEX_MODEL", os.getenv("LLM_MODEL", "gemini-2.0-flash"))
+
+
+def classify_query_complexity(question: str, schema_size: int = 0) -> str:
+    """Classify query complexity: simple | medium | complex."""
+    q = (question or "").lower()
+    complex_hits = sum(1 for kw in _COMPLEX_KEYWORDS if kw in q)
+    if complex_hits >= 2 or schema_size > 15:
+        return "complex"
+    if complex_hits >= 1 or any(kw in q for kw in _MEDIUM_KEYWORDS):
+        return "medium"
+    return "simple"
+
+
+def _model_for_complexity(complexity: str) -> str:
+    return {"simple": _SIMPLE_MODEL, "medium": _MEDIUM_MODEL, "complex": _COMPLEX_MODEL}.get(
+        complexity, _COMPLEX_MODEL
+    )
+
+
 def _extract_openai_text(response: Any) -> str:
     """Extract text content from both legacy and v1 OpenAI response shapes."""
     try:
@@ -540,37 +574,54 @@ FORBIDDEN OPERATIONS:
 
 Generate a PostgreSQL query to answer this question. Return ONLY a valid JSON object with the structure shown above."""
     
-    try:
-        logger.info(f"Calling LLM provider={config.provider} model={config.model} for question: {question}")
+    # Route to appropriate model based on complexity
+    complexity = classify_query_complexity(question, schema_size=len(schema_context.allowed_tables))
+    routed_model = _model_for_complexity(complexity)
+    if routed_model != config.model:
+        logger.info(f"LLM Router: question complexity={complexity}, routing to model={routed_model}")
+        config = LLMConfig()
+        config.model = routed_model
 
-        if config.provider == "openai":
-            response_text = _openai_chat_text(
-                config,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=config.temperature,
-                max_tokens=config.max_tokens,
-            )
-        else:  # gemini
-            model_name = config.model
-            if not model_name.startswith("models/"):
-                model_name = f"models/{model_name}"
-            model = genai.GenerativeModel(model_name)
-            gen_response = model.generate_content(
-                system_prompt + "\n\n" + user_prompt,
-                generation_config={
-                    "temperature": config.temperature,
-                    "max_output_tokens": config.max_tokens,
-                },
-            )
-            response_text = ""
-            if getattr(gen_response, "candidates", None):
-                for part in gen_response.candidates[0].content.parts:
-                    if hasattr(part, "text"):
-                        response_text = part.text
-                        break
-            if not response_text:
-                response_text = (getattr(gen_response, "text", "") or "").strip()
+    try:
+        from app.circuit_breaker import LLM_PRIMARY_BREAKER, CircuitOpenError
+
+        def _do_llm_call():
+            logger.info(f"Calling LLM provider={config.provider} model={config.model} complexity={complexity}")
+            if config.provider == "openai":
+                return _openai_chat_text(
+                    config,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=config.temperature,
+                    max_tokens=config.max_tokens,
+                )
+            else:
+                model_name = config.model
+                if not model_name.startswith("models/"):
+                    model_name = f"models/{model_name}"
+                _model = genai.GenerativeModel(model_name)
+                gen_response = _model.generate_content(
+                    system_prompt + "\n\n" + user_prompt,
+                    generation_config={
+                        "temperature": config.temperature,
+                        "max_output_tokens": config.max_tokens,
+                    },
+                )
+                _text = ""
+                if getattr(gen_response, "candidates", None):
+                    for part in gen_response.candidates[0].content.parts:
+                        if hasattr(part, "text"):
+                            _text = part.text
+                            break
+                if not _text:
+                    _text = (getattr(gen_response, "text", "") or "").strip()
+                return _text
+
+        try:
+            response_text = LLM_PRIMARY_BREAKER.call(_do_llm_call)
+        except CircuitOpenError:
+            logger.warning(f"LLM primary circuit open, attempting direct call")
+            response_text = _do_llm_call()
 
         logger.debug(f"LLM raw response: {response_text}")
         

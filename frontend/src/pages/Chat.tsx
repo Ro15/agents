@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAppState } from "../state";
 import { Button } from "../components/Button";
@@ -22,16 +22,95 @@ import {
 import type { ChatResponse, ConversationMemoryItem, ConversationThread } from "../types";
 import { useToast } from "../components/Toast";
 import { Skeleton } from "../components/Skeleton";
+import { useWebSocket } from "../hooks/useWebSocket";
+
+const WS_URL = "ws://localhost:8000/ws";
 
 type ChatMessage =
   | { role: "user"; content: string; createdAt: string }
   | { role: "assistant"; content: ChatResponse; createdAt: string };
+
+// ── SQL Modal ────────────────────────────────────────────────────────────
+const SqlModal: React.FC<{ resp: ChatResponse; onClose: () => void }> = ({ resp, onClose }) => (
+  <div
+    className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+    onClick={onClose}
+  >
+    <div
+      className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-slate-900">Query Details</h3>
+        <button
+          className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+          onClick={onClose}
+        >
+          Close
+        </button>
+      </div>
+      <TrustPanel
+        confidence={resp.confidence}
+        dataLastUpdated={resp.data_last_updated}
+        sql={resp.sql}
+      />
+      {resp.grounding?.citations && resp.grounding.citations.length > 0 && (
+        <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Grounding Sources
+          </p>
+          <ul className="mt-1 space-y-1">
+            {resp.grounding.citations.slice(0, 4).map((c, ci) => (
+              <li key={`${c.source_type}-${c.id || ci}`} className="text-xs text-slate-600">
+                [{c.source_type}] {c.title || c.id}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  </div>
+);
+
+// ── Typing indicator ─────────────────────────────────────────────────────
+const TypingIndicator: React.FC = () => (
+  <div className="flex items-end gap-3">
+    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">
+      AI
+    </div>
+    <div className="flex gap-1.5 rounded-2xl rounded-bl-sm border border-slate-200 bg-white p-3 shadow-sm">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="h-2 w-2 rounded-full bg-slate-400 animate-bounce"
+          style={{ animationDelay: `${i * 0.15}s` }}
+        />
+      ))}
+    </div>
+  </div>
+);
 
 export const ChatPage: React.FC = () => {
   const { activePlugin, activeDataset, setActiveDataset, upsertDatasetForPlugin } = useAppState();
   const navigate = useNavigate();
   const location = useLocation();
   const { push } = useToast();
+
+  // WebSocket for insight notifications
+  const { lastMessage } = useWebSocket(WS_URL);
+  const shownInsightRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      lastMessage?.type === "insights_ready" &&
+      lastMessage.dataset_id !== shownInsightRef.current
+    ) {
+      shownInsightRef.current = lastMessage.dataset_id as string;
+      push(
+        `New insights are ready for your dataset (${lastMessage.count} found). Check the Insights page.`,
+        "success"
+      );
+    }
+  }, [lastMessage, push]);
 
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -45,14 +124,19 @@ export const ChatPage: React.FC = () => {
   const [showArchived, setShowArchived] = useState(false);
   const [loadingMemory, setLoadingMemory] = useState(false);
   const [threadMemory, setThreadMemory] = useState<ConversationMemoryItem[]>([]);
-
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [autoSend, setAutoSend] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [showSuggestionsPanel, setShowSuggestionsPanel] = useState(true);
   const [feedbackGiven, setFeedbackGiven] = useState<Record<number, 1 | -1>>({});
   const [chartView, setChartView] = useState<Record<number, "chart" | "table">>({});
+  const [useStream, setUseStream] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
 
+  // SQL modal state
+  const [sqlModal, setSqlModal] = useState<ChatResponse | null>(null);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const canChat = !!activeDataset;
 
   const fallbackSuggestions = useMemo(
@@ -80,6 +164,11 @@ export const ChatPage: React.FC = () => {
         (t.last_message_preview || "").toLowerCase().includes(q)
     );
   }, [threadFilter, threads]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
 
   const buildConversationHistory = () => {
     return messages.slice(-10).map((m) => ({
@@ -332,6 +421,74 @@ export const ChatPage: React.FC = () => {
     }
   };
 
+  const sendMessageStream = async (override?: string) => {
+    const text = (override ?? input).trim();
+    if (!text || !canChat) return;
+
+    const userMsg: ChatMessage = { role: "user", content: text, createdAt: new Date().toISOString() };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setLoading(true);
+    setStreamingText("");
+
+    const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+    const url = `${API_BASE}/chat/stream?question=${encodeURIComponent(text)}&plugin_id=${encodeURIComponent(activePlugin)}${activeDataset?.dataset_id ? `&dataset_id=${activeDataset.dataset_id}` : ""}`;
+
+    const es = new EventSource(url);
+    let accumulatedRows: any[] = [];
+    let accumulatedSql = "";
+    let accumulatedNarrative = "";
+
+    es.addEventListener("sql", (e) => {
+      const d = JSON.parse(e.data);
+      accumulatedSql = d.sql || "";
+      setStreamingText(`SQL generated. Executing…`);
+    });
+    es.addEventListener("data", (e) => {
+      const d = JSON.parse(e.data);
+      accumulatedRows = d.rows || [];
+      setStreamingText(`Query returned ${accumulatedRows.length} rows. Generating narrative…`);
+    });
+    es.addEventListener("narrative", (e) => {
+      const d = JSON.parse(e.data);
+      accumulatedNarrative = d.text || "";
+      setStreamingText(accumulatedNarrative);
+    });
+    es.addEventListener("done", () => {
+      es.close();
+      const streamResp: ChatResponse = {
+        answer_type: accumulatedRows.length === 1 && Object.keys(accumulatedRows[0] || {}).length === 1 ? "number" : "table",
+        answer: accumulatedRows.length === 0 ? "" : accumulatedRows,
+        sql: accumulatedSql,
+        narrative: accumulatedNarrative,
+        summary: accumulatedNarrative || `Returned ${accumulatedRows.length} rows.`,
+        confidence: "medium",
+        plugin: activePlugin,
+        explanation: "Streamed response",
+      };
+      setMessages((prev) => [...prev, { role: "assistant", content: streamResp, createdAt: new Date().toISOString() }]);
+      setStreamingText("");
+      setLoading(false);
+    });
+    es.addEventListener("error", (e: any) => {
+      es.close();
+      try {
+        const d = JSON.parse((e as any).data || "{}");
+        push(d.message || "Streaming failed", "error");
+      } catch {
+        push("Streaming connection failed", "error");
+      }
+      setStreamingText("");
+      setLoading(false);
+    });
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) return;
+      es.close();
+      setStreamingText("");
+      setLoading(false);
+    };
+  };
+
   const handleUploadSuccess = (meta: import("../types").DatasetMeta) => {
     upsertDatasetForPlugin(activePlugin, meta);
     setActiveDataset(meta);
@@ -448,6 +605,9 @@ export const ChatPage: React.FC = () => {
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
+      {/* SQL detail modal */}
+      {sqlModal && <SqlModal resp={sqlModal} onClose={() => setSqlModal(null)} />}
+
       <div className="mb-2 flex items-center justify-end lg:hidden">
         <Button variant="ghost" size="sm" onClick={() => setShowSuggestionsPanel((v) => !v)}>
           {showSuggestionsPanel ? "Hide suggestions" : "Show suggestions"}
@@ -455,6 +615,7 @@ export const ChatPage: React.FC = () => {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px,1fr,280px]">
+        {/* ── Left sidebar: threads ─────────────────────────────── */}
         <div className="space-y-3">
           <Card
             title="Chat Sessions"
@@ -507,40 +668,28 @@ export const ChatPage: React.FC = () => {
                           <div className="flex items-center gap-1">
                             <button
                               className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleTogglePinConversation(t);
-                              }}
+                              onClick={(e) => { e.stopPropagation(); handleTogglePinConversation(t); }}
                               title={t.is_pinned ? "Unpin" : "Pin"}
                             >
                               {t.is_pinned ? "Unpin" : "Pin"}
                             </button>
                             <button
                               className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleArchiveConversation(t);
-                              }}
+                              onClick={(e) => { e.stopPropagation(); handleToggleArchiveConversation(t); }}
                               title={t.archived ? "Unarchive" : "Archive"}
                             >
                               {t.archived ? "Unarchive" : "Archive"}
                             </button>
                             <button
                               className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRenameConversation(t);
-                              }}
+                              onClick={(e) => { e.stopPropagation(); handleRenameConversation(t); }}
                               title="Rename"
                             >
                               Rename
                             </button>
                             <button
                               className="rounded px-1.5 py-0.5 text-[11px] text-red-500 hover:bg-red-50"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteConversation(t);
-                              }}
+                              onClick={(e) => { e.stopPropagation(); handleDeleteConversation(t); }}
                               title="Delete"
                             >
                               Delete
@@ -549,14 +698,10 @@ export const ChatPage: React.FC = () => {
                         </div>
                         <div className="mt-1 flex items-center gap-2">
                           {t.is_pinned && (
-                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
-                              Pinned
-                            </span>
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">Pinned</span>
                           )}
                           {t.archived && (
-                            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
-                              Archived
-                            </span>
+                            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">Archived</span>
                           )}
                         </div>
                         {t.last_message_preview && (
@@ -583,14 +728,13 @@ export const ChatPage: React.FC = () => {
           </Card>
 
           <div className="flex flex-col gap-2">
-            <Button variant="secondary" onClick={() => navigate("/")}>
-              Change Plugin/Dataset
-            </Button>
+            <Button variant="secondary" onClick={() => navigate("/")}>Change Plugin/Dataset</Button>
             <Button onClick={() => setShowUpload(true)}>Upload New Dataset</Button>
           </div>
         </div>
 
-        <div className="space-y-4">
+        {/* ── Center: chat area ─────────────────────────────────── */}
+        <div className="flex flex-col gap-4">
           <header>
             <h1 className="text-2xl font-bold text-slate-900">Chat with your data</h1>
             <p className="text-sm text-slate-600">
@@ -609,29 +753,47 @@ export const ChatPage: React.FC = () => {
 
           {canChat && (
             <>
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              {/* Input bar */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex gap-2">
                   <input
-                    className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
+                    className="flex-1 rounded-xl border border-slate-300 px-4 py-2.5 text-sm focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
                     placeholder="Ask a question (follow-ups use session memory)..."
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
-                        sendMessage();
+                        useStream ? sendMessageStream() : sendMessage();
                       }
                     }}
                   />
-                  <Button onClick={() => sendMessage()} disabled={loading || loadingThreadMessages}>
-                    {loading ? "Thinking..." : "Send"}
+                  <Button onClick={() => useStream ? sendMessageStream() : sendMessage()} disabled={loading || loadingThreadMessages}>
+                    {loading ? (useStream ? "Streaming…" : "Thinking…") : "Send"}
                   </Button>
                 </div>
-                <div className="text-xs text-slate-500">
-                  Enter to send. Follow-up questions use saved session context and memory.
+                <div className="mt-2 flex items-center justify-between">
+                  <p className="text-xs text-slate-500">
+                    Enter to send · Follow-up questions use saved session context and memory
+                  </p>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-500 select-none">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 rounded"
+                      checked={useStream}
+                      onChange={(e) => setUseStream(e.target.checked)}
+                    />
+                    Stream mode
+                  </label>
                 </div>
+                {loading && useStream && streamingText && (
+                  <div className="mt-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+                    {streamingText}
+                  </div>
+                )}
               </div>
 
+              {/* Message list */}
               {loadingThreadMessages ? (
                 <div className="space-y-3">
                   {Array.from({ length: 3 }).map((_, i) => (
@@ -640,96 +802,116 @@ export const ChatPage: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {messages.map((m, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        {m.role === "user" ? "You" : "Assistant"}
-                      </div>
-                      {m.role === "user" ? (
-                        <p className="whitespace-pre-wrap text-sm text-slate-800">{m.content}</p>
-                      ) : (
-                        <>
-                          {renderAnswer(m.content as ChatResponse, idx)}
-                          <TrustPanel
-                            confidence={(m.content as ChatResponse).confidence}
-                            dataLastUpdated={(m.content as ChatResponse).data_last_updated}
-                            sql={(m.content as ChatResponse).sql}
-                          />
-                          {(m.content as ChatResponse).grounding?.citations &&
-                            (m.content as ChatResponse).grounding!.citations!.length > 0 && (
-                              <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2">
-                                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                  Grounding Sources
-                                </p>
-                                <ul className="mt-1 space-y-1">
-                                  {(m.content as ChatResponse).grounding!.citations!.slice(0, 4).map((c, ci) => (
-                                    <li key={`${c.source_type}-${c.id || ci}`} className="text-xs text-slate-600">
-                                      [{c.source_type}] {c.title || c.id}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                          {(m.content as ChatResponse).answer_type === "text" && (
-                            <p className="mt-2 text-xs text-slate-500">{(m.content as ChatResponse).explanation}</p>
-                          )}
-                          <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-2">
-                            {feedbackGiven[idx] ? (
-                              <span className="text-xs text-slate-500">
-                                {feedbackGiven[idx] === 1 ? "Rated helpful" : "Rated not helpful"}
-                              </span>
-                            ) : (
-                              <>
-                                <button
-                                  className="rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-green-50 hover:text-green-700"
-                                  onClick={() => handleFeedback(idx, 1, m.content as ChatResponse)}
-                                  title="This answer was helpful"
-                                >
-                                  Helpful
-                                </button>
-                                <button
-                                  className="rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-red-50 hover:text-red-700"
-                                  onClick={() => handleFeedback(idx, -1, m.content as ChatResponse)}
-                                  title="This answer was not helpful"
-                                >
-                                  Not helpful
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                  {/* Empty state: suggestion chips */}
                   {messages.length === 0 && (
-                    <Card title="Suggested questions">
-                      <ul className="list-disc space-y-1 pl-4 text-sm text-slate-700">
-                        {suggestions.map((s) => (
-                          <li key={s}>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                      <p className="mb-3 text-sm font-semibold text-slate-700">Suggested questions</p>
+                      {loadingSuggestions ? (
+                        <div className="flex flex-wrap gap-2">
+                          {Array.from({ length: 6 }).map((_, i) => (
+                            <Skeleton key={i} className="h-8 w-40 rounded-full" />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {suggestions.slice(0, 8).map((q) => (
                             <button
-                              className="text-brand-blue hover:underline"
+                              key={q}
+                              className="rounded-full border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-brand-blue hover:bg-brand-blue hover:text-white"
                               onClick={() => {
-                                if (autoSend) sendMessage(s);
-                                else setInput(s);
+                                if (autoSend) sendMessage(q);
+                                else setInput(q);
                               }}
                             >
-                              {s}
+                              {q}
                             </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </Card>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
+
+                  {/* Chat bubbles */}
+                  {messages.map((m, idx) => (
+                    <div
+                      key={idx}
+                      className={`flex items-end gap-3 ${m.role === "user" ? "flex-row-reverse" : "flex-row"}`}
+                    >
+                      {/* Avatar (assistant only) */}
+                      {m.role === "assistant" && (
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">
+                          AI
+                        </div>
+                      )}
+
+                      <div
+                        className={`max-w-[85%] rounded-2xl p-4 shadow-sm ${
+                          m.role === "user"
+                            ? "rounded-br-sm bg-brand-blue text-white"
+                            : "rounded-bl-sm border border-slate-200 bg-white text-slate-900"
+                        }`}
+                      >
+                        {m.role === "user" ? (
+                          <p className="whitespace-pre-wrap text-sm">{m.content}</p>
+                        ) : (
+                          <>
+                            {renderAnswer(m.content as ChatResponse, idx)}
+
+                            {/* SQL inspect button + feedback */}
+                            <div className="mt-3 flex items-center gap-3 border-t border-slate-100 pt-2">
+                              {(m.content as ChatResponse).sql && (
+                                <button
+                                  className="rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:border-slate-400 hover:text-slate-700"
+                                  onClick={() => setSqlModal(m.content as ChatResponse)}
+                                  title="View SQL & trust details"
+                                >
+                                  SQL
+                                </button>
+                              )}
+                              {feedbackGiven[idx] ? (
+                                <span className="text-xs text-slate-500">
+                                  {feedbackGiven[idx] === 1 ? "Rated helpful" : "Rated not helpful"}
+                                </span>
+                              ) : (
+                                <>
+                                  <button
+                                    className="rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-green-50 hover:text-green-700"
+                                    onClick={() => handleFeedback(idx, 1, m.content as ChatResponse)}
+                                    title="Helpful"
+                                  >
+                                    Helpful
+                                  </button>
+                                  <button
+                                    className="rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-red-50 hover:text-red-700"
+                                    onClick={() => handleFeedback(idx, -1, m.content as ChatResponse)}
+                                    title="Not helpful"
+                                  >
+                                    Not helpful
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Typing indicator */}
+                  {loading && <TypingIndicator />}
+
+                  <div ref={messagesEndRef} />
                 </div>
               )}
             </>
           )}
         </div>
 
+        {/* ── Right sidebar: suggestions + memory ──────────────── */}
         {showSuggestionsPanel && (
           <aside className="space-y-3">
             <Card title="Suggested Questions">
-              <div className="flex items-center justify-between">
+              <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs text-slate-500">Tap to fill. Auto-send?</span>
                 <label className="flex items-center gap-2 text-xs text-slate-600">
                   <input
@@ -738,7 +920,7 @@ export const ChatPage: React.FC = () => {
                     onChange={(e) => setAutoSend(e.target.checked)}
                     className="h-4 w-4 rounded border-slate-300 text-brand-blue focus:ring-brand-blue"
                   />
-                  Auto-send
+                  Auto
                 </label>
               </div>
               {loadingSuggestions ? (
@@ -748,28 +930,23 @@ export const ChatPage: React.FC = () => {
                   ))}
                 </div>
               ) : (
-                <ul className="space-y-2 text-sm text-slate-800">
+                <div className="flex flex-col gap-1.5">
                   {suggestions.slice(0, 12).map((q) => (
-                    <li key={q}>
-                      <button
-                        className="w-full text-left text-brand-blue hover:underline"
-                        onClick={() => {
-                          if (autoSend) sendMessage(q);
-                          else setInput(q);
-                        }}
-                      >
-                        {q}
-                      </button>
-                    </li>
+                    <button
+                      key={q}
+                      className="rounded-lg border border-slate-200 px-3 py-2 text-left text-xs text-slate-700 transition hover:border-brand-blue hover:bg-brand-blue/5 hover:text-brand-blue"
+                      onClick={() => {
+                        if (autoSend) sendMessage(q);
+                        else setInput(q);
+                      }}
+                    >
+                      {q}
+                    </button>
                   ))}
-                </ul>
+                </div>
               )}
             </Card>
-            <Card>
-              <p className="text-xs text-slate-600">
-                Sessions are stored in the database. Follow-ups use both recent turns and session memory.
-              </p>
-            </Card>
+
             <Card title="Session Memory">
               {!conversationId ? (
                 <p className="text-xs text-slate-500">Open a chat session to view learned memory.</p>
@@ -784,7 +961,7 @@ export const ChatPage: React.FC = () => {
               ) : (
                 <ul className="space-y-2">
                   {threadMemory.map((m) => (
-                    <li key={m.memory_id} className="rounded border border-slate-200 bg-slate-50 p-2">
+                    <li key={m.memory_id} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                         {m.memory_type.replace(/_/g, " ")}
                       </p>

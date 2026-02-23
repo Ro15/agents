@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(echo:*)",
+      "Bash(python3:*)"
     ]
   }
 }

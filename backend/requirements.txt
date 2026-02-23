@@ -19,6 +19,10 @@ gspread                     # Google Sheets API
 google-auth                 # Auth for Google Sheets & BigQuery
 httpx                       # REST API connector (async HTTP client)
 
+# ── Task queue & caching ─────────────────────
+celery[redis]               # Async job queue (Celery + Redis broker)
+redis                       # Redis client (result cache + Celery backend)
+
 # ── Optional cloud connectors (install when needed) ──
 # snowflake-connector-python
 # google-cloud-bigquery

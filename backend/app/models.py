@@ -434,3 +434,54 @@ Index("idx_agent_profile_user_plugin", AgentUserProfile.user_id, AgentUserProfil
 Index("idx_agent_goals_plugin_status", AgentGoal.plugin_id, AgentGoal.status)
 Index("idx_agent_steps_goal_order", AgentPlanStep.goal_id, AgentPlanStep.step_order)
 Index("idx_agent_automation_plugin_enabled", AgentAutomation.plugin_id, AgentAutomation.enabled)
+
+
+# ── Schema Drift Events ──────────────────────────────────────────────────
+
+class SchemaDriftEvent(Base):
+    __tablename__ = "schema_drift_events"
+    id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    dataset_id = Column(String, index=True, nullable=False)
+    detected_at = Column(TIMESTAMP, server_default=text("now()"), index=True)
+    drift_type = Column(String, nullable=False)
+    column_name = Column(String, nullable=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    severity = Column(String, server_default=text("'medium'"))
+
+
+# ── Immutable Audit Log ──────────────────────────────────────────────────
+
+class AuditLog(Base):
+    """Append-only audit log. Never UPDATE or DELETE rows."""
+    __tablename__ = "audit_log"
+    id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    event_type = Column(String, nullable=False, index=True)
+    plugin_id = Column(String, index=True, nullable=True)
+    dataset_id = Column(String, index=True, nullable=True)
+    sql_executed = Column(Text, nullable=True)
+    rows_returned = Column(Integer, nullable=True)
+    user_session_id = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    pii_columns_accessed = Column(JSON_TYPE, nullable=True)
+    extra = Column(JSON_TYPE, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=text("now()"), index=True)
+
+
+# ── Prompt Rules (self-optimization) ────────────────────────────────────
+
+class PromptRule(Base):
+    __tablename__ = "prompt_rules"
+    id = Column(UUID_TYPE(as_uuid=True), primary_key=True, default=uuid4)
+    plugin_id = Column(String, nullable=False, index=True)
+    diff_type = Column(String, nullable=False)
+    rule_text = Column(Text, nullable=False)
+    applied_count = Column(Integer, server_default=text("0"))
+    is_active = Column(Boolean, server_default=text("true"))
+    created_at = Column(TIMESTAMP, server_default=text("now()"))
+
+
+Index("idx_schema_drift_dataset_time", SchemaDriftEvent.dataset_id, SchemaDriftEvent.detected_at)
+Index("idx_audit_log_plugin_time", AuditLog.plugin_id, AuditLog.created_at)
+Index("idx_prompt_rules_plugin", PromptRule.plugin_id, PromptRule.is_active)

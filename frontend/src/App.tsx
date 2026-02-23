@@ -12,6 +12,7 @@ import { DashboardListPage } from "./pages/DashboardBuilder";
 import { SchedulesPage } from "./pages/Schedules";
 import { DataCatalogPage } from "./pages/DataCatalog";
 import { UsagePage } from "./pages/Usage";
+import { DataSourcesPage } from "./pages/DataSources";
 import { AppStateProvider, useAppState } from "./state";
 import { ToastProvider } from "./components/Toast";
 import { TopNav } from "./components/TopNav";
@@ -46,6 +47,7 @@ function App() {
                     <Route path="/schedules" element={<SchedulesPage />} />
                     <Route path="/catalog" element={<DataCatalogPage />} />
                     <Route path="/usage" element={<UsagePage />} />
+                    <Route path="/data-sources" element={<DataSourcesPage />} />
                   </Routes>
               </ErrorBoundary>
             </main>
